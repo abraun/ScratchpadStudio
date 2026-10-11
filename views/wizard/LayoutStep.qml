@@ -58,7 +58,7 @@ Item {
         Row {
           spacing: Style.space(4)
           Repeater {
-            model: ["top", "bottom", "left", "right"]
+            model: ["top", "bottom", "left", "right", "center"]
             Button {
               required property string modelData
               text: modelData

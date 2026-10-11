@@ -18,7 +18,8 @@ Item {
     { id: "down",  label: qsTr("From top"),    glyph: "󰁝", anchor: "top" },
     { id: "up",    label: qsTr("From bottom"), glyph: "󰁅", anchor: "bottom" },
     { id: "right", label: qsTr("From left"),   glyph: "󰁔", anchor: "left" },
-    { id: "left",  label: qsTr("From right"),  glyph: "󰁠", anchor: "right" }
+    { id: "left",  label: qsTr("From right"),  glyph: "󰁠", anchor: "right" },
+    { id: "popin", label: qsTr("Centered"),    glyph: "◎", anchor: "center" }
   ]
 
   function choose(direction) {
@@ -125,6 +126,10 @@ Item {
         readonly property real outY: (dir === "down" || dir === "up")
           ? (dir === "down" ? -h : parent.height)
           : inY
+        // popin (centered anchor): the frame stays put and scales in —
+        // the popin animation the engine bakes for this transition.
+        scale: dir === "popin" ? 0.35 + 0.65 * previewScreen.t : 1
+        opacity: dir === "popin" ? previewScreen.t : 1
         width: w
         height: h
         radius: Style.cornerRadius - 2
@@ -165,7 +170,7 @@ Item {
       font.pixelSize: Style.font.caption
       lineHeight: 1.3
       renderType: Text.NativeRendering
-      text: qsTr("The reveal is Hyprland's special-workspace slide. Your pick sets the anchor and the per-window animation, so the scratchpad enters the way it sits — a top drop-down anchors top and slides down, a left drawer anchors left.")
+      text: qsTr("The reveal is Hyprland's special-workspace slide. Your pick sets the anchor and the per-window animation, so the scratchpad enters the way it sits — a top drop-down anchors top and slides down, a left drawer anchors left, and the centered pick anchors center and pops in.")
     }
   }
 }

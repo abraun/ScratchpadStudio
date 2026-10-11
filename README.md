@@ -23,19 +23,21 @@ Browsing, AI, music — one chord each.
   Drag a card onto another slot to rearrange (or Ctrl+←/→ with the
   keyboard), Del removes an app, **Add app** reuses the wizard's picker
   (installed apps, running windows, custom command/URL), and the keybind
-  is re-captured right there — Ctrl+K, press a chord, done. Saving swaps
+  is an editable control — click the chip or Ctrl+K, hold modifiers in
+  any order (they build up live), press the final key, done. Saving swaps
   the old `o.bind()` line for the new one wholesale (no orphan binds) and
   reflows already-open windows onto their new slots, live. Windows can be
-  arranged in slots or set to float freely.
+  arranged in slots or set to float freely, anchored to any edge or the
+  center (a centered scratchpad pops in).
 - **Six-step wizard** — name & icon; apps picked from installed apps,
   currently-running windows, or a custom command/URL (web apps open as
   `chromium --app` windows with the right class); window placement
   (arranged in slots or floating), layout thumbnails
   (single / pair / stacked / three-up / grid) with size, anchor and margin;
-  slide-in direction with an animated preview; press-to-capture keybind
-  with live conflict detection and free-chord suggestions; review with a
-  **Test it now** button that applies and toggles the real thing before
-  you commit.
+  slide-in direction (or centered pop-in) with an animated preview;
+  press-to-capture keybind with live conflict detection and free-chord
+  suggestions; review with a **Test it now** button that applies and
+  toggles the real thing before you commit.
 
 | | |
 |---|---|
@@ -43,6 +45,11 @@ Browsing, AI, music — one chord each.
 | ![Keybind](screenshots/wizard-keybind.png) | ![Summary](screenshots/wizard-summary.png) |
 
 ![Editing](screenshots/editor.png)
+
+Editing the centered Music scratchpad — anchor and slide-in live under the
+canvas; the pair arrangement, apps and keybind sit on the right:
+
+![Editing a centered scratchpad](screenshots/editor-center.png)
 
 - **Two surfaces** — the panel from the bar icon, and a resizable app
   window (right-click the bar icon, `ipc call scratchpad-studio window`,
@@ -82,10 +89,12 @@ Scratchpad Studio manages **named special workspaces** natively:
   your current workspace — nothing is ever closed or killed.
 - Its chord runs `scratchpad-studio toggle <name>`: any app whose class
   isn't already on the scratchpad's workspace is launched (rules route it
-  in), then the special workspace is revealed. Single-instance apps
-  (Cider, Discord, …) match by class with no process tracking, so
-  launchers that exit immediately still work; web apps match their
-  `chrome-<host>__-Default` class.
+  in), then the special workspace is revealed — and slots-placement
+  windows are reflowed onto their configured rects, so a scratchpad
+  always lands in its saved arrangement even if a window was dragged
+  away or tiled. Single-instance apps (Cider, Discord, …) match by class
+  with no process tracking, so launchers that exit immediately still
+  work; web apps match their `chrome-<host>__-Default` class.
 - Keybinds are `o.bind()` lines in the generated file, included from a
   clearly-marked managed block in `bindings.lua`. The file is regenerated
   from state on every save, so a changed chord replaces the old line —
@@ -99,7 +108,8 @@ it would do here is available natively. Full decision record in
 
 Known simplification: the reveal slide is Hyprland's global
 special-workspace animation; the wizard's "slide in from" choice steers
-anchor + per-window animation so the scratchpad enters the way it sits.
+anchor + per-window animation so the scratchpad enters the way it sits
+(the centered pick anchors center and pops in).
 
 ## Files it writes
 

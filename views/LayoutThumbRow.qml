@@ -17,8 +17,18 @@ Item {
   property string layoutId: "single"
   property string placement: "slots"      // "slots" | "floating"
   property int count: 1
+  // Compact: the editor's right rail is ~300px wide and shares the panel's
+  // 600px height with three other boxes — thumbnails shrink so the whole
+  // editor fits without the overflow that used to push the keybind control
+  // under the footer.
+  property bool compact: false
   signal layoutChosen(string layoutId)
   signal placementChosen(string placement)
+
+  readonly property real thumbW: compact ? Style.space(64) : Style.space(92)
+  readonly property real thumbH: compact ? Style.space(56) : Style.space(80)
+  readonly property real miniW: compact ? Style.space(42) : Style.space(60)
+  readonly property real miniH: compact ? Style.space(26) : Style.space(38)
 
   implicitHeight: placementRow.implicitHeight
      + (placement === "slots" ? thumbs.implicitHeight + Style.space(8) : 0)
@@ -62,8 +72,8 @@ Item {
         Rectangle {
           required property var modelData
           readonly property bool chosen: root.layoutId === modelData.id
-          width: Style.space(92)
-          height: Style.space(80)
+          width: root.thumbW
+          height: root.thumbH
           radius: Style.cornerRadius
           color: chosen ? Qt.alpha(Color.accent, 0.12) : Qt.alpha(Color.foreground, 0.04)
           border.width: chosen ? 2 : 1
@@ -83,8 +93,8 @@ Item {
 
             // thumbnail: normalized slot boxes
             Item {
-              width: Style.space(60)
-              height: Style.space(38)
+              width: root.miniW
+              height: root.miniH
               Repeater {
                 model: LayoutMath.thumbBoxes(modelData.id, Math.max(1, root.count))
                 Rectangle {
@@ -106,7 +116,8 @@ Item {
               text: modelData.label
               color: chosen ? Color.foreground : Color.muted
               font.family: Style.font.family
-              font.pixelSize: Style.font.caption
+              font.pixelSize: root.compact
+                ? Math.max(8, Style.font.caption * 0.85) : Style.font.caption
               renderType: Text.NativeRendering
             }
           }

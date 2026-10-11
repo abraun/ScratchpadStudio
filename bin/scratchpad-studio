@@ -48,13 +48,22 @@ BLOCK_LINES = [BLOCK_BEGIN, 'require("hypr.scratchpad-studio")', BLOCK_END]
 GAP_MIN_PX = 6
 VERSION = "0.2.0"
 
-ANCHORS = ("top", "bottom", "left", "right")
+ANCHORS = ("top", "bottom", "left", "right", "center")
 LAYOUTS = ("single", "pair", "stacked", "three-up", "grid")
-TRANSITIONS = ("down", "up", "right", "left")
+# "popin" pairs with the center anchor: the frame has no edge to slide
+# from, so windows scale in instead (Hyprland's popin animation style).
+TRANSITIONS = ("down", "up", "right", "left", "popin")
 # Windows either open arranged in the configured slot geometry ("slots",
 # float + baked pixel rules — the default since v0.1) or free-floating
 # ("floating": float, no size/move rules, the window keeps its own size).
 PLACEMENTS = ("slots", "floating")
+
+# Per-window animation style for the reveal. Edge anchors slide from their
+# edge; the center anchor pops in (scale), which reads as "appear in place".
+ANIMATION_STYLES = {
+    "down": "slide", "up": "slide", "right": "slide", "left": "slide",
+    "popin": "popin",
+}
 
 # Apps known to be single-instance: the launcher process exits immediately
 # and the real window maps later, so PID/process tracking always lies. For
@@ -415,8 +424,10 @@ def base_rect(sp: dict, usable: tuple[int, int]) -> tuple[int, int, int, int]:
         x, y = (width - w) // 2, height - margin - h
     elif anchor == "left":
         x, y = margin, (height - h) // 2
-    else:  # right
+    elif anchor == "right":
         x, y = width - margin - w, (height - h) // 2
+    else:  # center
+        x, y = (width - w) // 2, (height - h) // 2
     return x, y, w, h
 
 
@@ -473,7 +484,7 @@ def window_rule_body(sp: dict, app: dict, rect: tuple[int, int, int, int] | None
         body += f', size = "{rect[2]} {rect[3]}", move = "{rect[0]} {rect[1]}"'
         if monitor_name:
             body += f', monitor = "{monitor_name}"'
-    style = {"down": "slide", "up": "slide", "right": "slide", "left": "slide"}.get(sp["transition"])
+    style = ANIMATION_STYLES.get(sp["transition"])
     if style:
         body += f", animation = {lua_quote(style)}"
     return body
@@ -502,9 +513,7 @@ def transition_rule(sp: dict) -> str | None:
     """Per-window animation style so the reveal matches the chosen direction.
     The specialWorkspace slide itself is global (Omarchy sets slidevert);
     the window animation is what we can steer per scratchpad."""
-    style = {
-        "down": "slide", "up": "slide", "right": "slide", "left": "slide"
-    }.get(sp["transition"])
+    style = ANIMATION_STYLES.get(sp["transition"])
     if not style:
         return None
     classes = [a["class"] for a in sp["apps"] if a["class"]]
@@ -542,6 +551,29 @@ def launch_missing(sp: dict) -> None:
         )
 
 
+def reveal(sp: dict) -> None:
+    """Shared show path: re-arm runtime rules, launch missing apps, reveal
+    the special workspace, then reflow slots-placement windows onto their
+    configured rects.
+
+    The reflow-on-reveal matters: window rules only fire at map time, so
+    windows that drifted (dragged while floating, tiled by an earlier map
+    before our rules loaded) would otherwise reveal scattered even though
+    the saved layout is intact. Reflow is idempotent, cheap, touches only
+    this scratchpad's windows, and floating placement skips it entirely
+    (there the positions are the user's to keep)."""
+    monitor = focused_monitor()
+    for snippet in runtime_rules(sp, monitor):
+        eval_lua(snippet)
+    rule = transition_rule(sp)
+    if rule:
+        eval_lua(rule)
+    launch_missing(sp)
+    dispatch_lua(f'hl.dsp.workspace.toggle_special({lua_quote(sp["id"])})')
+    if sp["placement"] == "slots":
+        reflow(sp["id"], quiet=True)
+
+
 def toggle(sp_id: str) -> None:
     state = load_state()
     sp = find_sp(state, sp_id)
@@ -549,14 +581,7 @@ def toggle(sp_id: str) -> None:
         die(f"unknown scratchpad: {sp_id}")
     shown = special_is_shown(sp_id)
     if not shown:
-        monitor = focused_monitor()
-        for snippet in runtime_rules(sp, monitor):
-            eval_lua(snippet)
-        rule = transition_rule(sp)
-        if rule:
-            eval_lua(rule)
-        launch_missing(sp)
-        dispatch_lua(f'hl.dsp.workspace.toggle_special({lua_quote(sp_id)})')
+        reveal(sp)
     else:
         # Already on screen: the chord means "hide". Relaunching missing apps
         # while visible would toggle us closed, so only the hide happens.
@@ -570,14 +595,7 @@ def show(sp_id: str) -> None:
         die(f"unknown scratchpad: {sp_id}")
     if special_is_shown(sp_id):
         return
-    monitor = focused_monitor()
-    for snippet in runtime_rules(sp, monitor):
-        eval_lua(snippet)
-    rule = transition_rule(sp)
-    if rule:
-        eval_lua(rule)
-    launch_missing(sp)
-    dispatch_lua(f'hl.dsp.workspace.toggle_special({lua_quote(sp_id)})')
+    reveal(sp)
 
 
 def hide(sp_id: str) -> None:

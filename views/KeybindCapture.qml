@@ -27,7 +27,19 @@ Item {
   activeFocusOnTab: true
 
   property bool capturing: false
-  property string captured: ""
+  // Chord captured in this session. Kept separate from `chord` (which the
+  // host binds) because assigning to a bound property destroys its
+  // binding — a previous version did that and the control went "static"
+  // after the first capture (re-opening the editor showed a stale chord).
+  // shownChord prefers the live value; a real external chord change wins.
+  property string liveChord: ""
+  onChordChanged: liveChord = ""
+  readonly property string shownChord: liveChord !== "" ? liveChord : chord
+  // Modifiers currently held while capturing, in press order — the live
+  // "SUPER + SHIFT + …" display. Key RELEASES remove them again so the
+  // display tracks the fingers, not history.
+  property var heldMods: []
+  property string captureHint: ""
   property string conflictText: ""
   property bool conflictIsOmarchy: false
   property bool conflictIsOtherScratchpad: false
@@ -44,18 +56,31 @@ Item {
   // Entering with no chord armed: start capturing immediately — focus
   // alone is the invitation.
   onActiveFocusChanged: {
-    if (activeFocus && root.chord === "") capturing = true
+    if (activeFocus && root.chord === "" && !capturing) beginCapture()
   }
 
   function setChord(chord) {
-    root.chord = chord
+    liveChord = chord
     chordEdited(chord)
     checkConflicts(chord)
   }
 
-  function forceCapture() {
+  function beginCapture() {
     capturing = true
+    heldMods = []
+    captureHint = ""
+    conflictText = ""
     forceActiveFocus()
+  }
+
+  function endCapture() {
+    capturing = false
+    heldMods = []
+    captureHint = ""
+  }
+
+  function forceCapture() {
+    beginCapture()
   }
 
   function checkConflicts(chord) {
@@ -72,6 +97,37 @@ Item {
     if (map[key] !== undefined) return map[key]
     if (key.length === 1) return key.toUpperCase()
     return key.toUpperCase()
+  }
+
+  // Canonical chord-modifier name for a modifier key code, or "" when the
+  // key is not a modifier. Qt reports the Super key as Qt.Key_Super_L/R
+  // (Qt.Meta being the windows-key alias); without this mapping a pressed
+  // SUPER used to complete the chord as "SUPER + ?" — the capture-stops-
+  // at-the-first-key bug — because keyFromCode() did not know the code.
+  function modifierName(key) {
+    switch (key) {
+      case Qt.Key_Shift: case Qt.Key_Shift_L: case Qt.Key_Shift_R:
+        return "SHIFT"
+      case Qt.Key_Control: case Qt.Key_Control_L: case Qt.Key_Control_R:
+        return "CTRL"
+      case Qt.Key_Alt: case Qt.Key_Alt_L: case Qt.Key_Alt_R:
+        return "ALT"
+      case Qt.Key_Meta: case Qt.Key_Super_L: case Qt.Key_Super_R:
+      case Qt.Key_Hyper_L: case Qt.Key_Hyper_R:
+        return "SUPER"
+    }
+    return ""
+  }
+
+  // Lock/cluster keys: neither modifiers Hyprland binds on nor keys we
+  // want to end capture — swallowed while capturing.
+  function ignoredKeyName(key) {
+    switch (key) {
+      case Qt.Key_CapsLock: case Qt.Key_NumLock: case Qt.Key_ScrollLock:
+      case Qt.Key_AltGr: case Qt.Key_Direction_L: case Qt.Key_Direction_R:
+        return true
+    }
+    return false
   }
 
   Process {
@@ -156,106 +212,200 @@ Item {
       var plain = event.key === Qt.Key_Return || event.key === Qt.Key_Enter
         || event.key === Qt.Key_Space
       if (plain && event.modifiers === Qt.NoModifier) {
-        forceCapture()
+        beginCapture()
         event.accepted = true
       } else {
         event.accepted = false
       }
       return
     }
-    event.accepted = true
-    if (event.key === Qt.Key_Escape) {
-      capturing = false
-      return
+    event.accepted = processCaptureKey(event.key, event.modifiers, event.text)
+  }
+
+  Keys.onReleased: function(event) {
+    if (!capturing) return
+    var mod = modifierName(event.key)
+    if (mod !== "")
+      heldMods = heldMods.filter(function(m) { return m !== mod })
+  }
+
+  // The capture state machine, callable both from real key events and
+  // from verification IPC (synthetic codes) — one code path, so what the
+  // tests drive is what the keyboard drives.
+  // Returns true when the event was consumed.
+  function processCaptureKey(key, modifiers, text) {
+    if (key === Qt.Key_Escape) {
+      endCapture()
+      if (root.chord !== "") checkConflicts(root.chord)
+      return true
     }
     // Swallow Enter while capturing so it cannot bubble up and trigger
     // the wizard's advance / the editor's focused buttons.
-    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) return
-    if (event.key === Qt.Key_Backspace) {
+    if (key === Qt.Key_Return || key === Qt.Key_Enter) return true
+    if (key === Qt.Key_Backspace) {
       setChord("")
-      capturing = false
-      return
+      endCapture()
+      return true
+    }
+
+    // The full-chord contract: modifier-only presses (in any order, any
+    // number) update the live display and keep waiting; the first
+    // non-modifier key completes the chord, taking its modifier state
+    // from the event itself.
+    var mod = modifierName(key)
+    if (mod !== "") {
+      captureHint = ""
+      if (heldMods.indexOf(mod) < 0) heldMods = heldMods.concat([mod])
+      return true
+    }
+    if (ignoredKeyName(key)) return true
+
+    var name = keyNameFor(key, text)
+    if (name === "") {
+      captureHint = qsTr("That key can’t be bound — use a letter, number or F-key")
+      return true
     }
     var mods = []
-    if (event.modifiers & Qt.ShiftModifier) mods.push("SHIFT")
-    if (event.modifiers & Qt.ControlModifier) mods.push("CTRL")
-    if (event.modifiers & Qt.AltModifier) mods.push("ALT")
-    if (event.modifiers & Qt.MetaModifier) mods.push("SUPER")
-    // event.text under Ctrl is a control character (or empty), never the
-    // letter — trust it only when printable, else derive from the key code.
-    var t = event.text
-    var printable = t.length === 1 && t.charCodeAt(0) >= 33 && t.charCodeAt(0) <= 126
-    var name = keyName(printable ? t : keyFromCode(event.key))
-    // modifier-only presses don't count
-    if (["SHIFT", "CTRL", "ALT", "SUPER", "META"].indexOf(name) >= 0) return
+    if (modifiers & Qt.ShiftModifier) mods.push("SHIFT")
+    if (modifiers & Qt.ControlModifier) mods.push("CTRL")
+    if (modifiers & Qt.AltModifier) mods.push("ALT")
+    if (modifiers & Qt.MetaModifier) mods.push("SUPER")
     if (mods.length === 0) {
       conflictText = qsTr("Add a modifier — bare keys type into apps.")
       conflictIsOmarchy = false
       conflictIsOtherScratchpad = false
-      return
+      return true
     }
-    captured = mods.join(" + ") + " + " + name
-    capturing = false
-    setChord(captured)
+    var chord = mods.join(" + ") + " + " + name
+    endCapture()
+    setChord(chord)
+    return true
   }
 
+  // Key name for the chord's final key. The key CODE is preferred over
+  // the key text: the code is layout- and shift-stable (SHIFT+1 records
+  // "1", not "!"), while text under Ctrl is a control character and
+  // under Shift is the shifted glyph — neither makes a Hyprland chord.
+  function keyNameFor(key, text) {
+    var fromCode = keyFromCode(key)
+    if (fromCode !== "") return fromCode
+    if (text && text.length === 1 && text.charCodeAt(0) >= 33 && text.charCodeAt(0) <= 126)
+      return keyName(text)
+    return ""
+  }
+
+  // "" when the code has no chord-safe name (the caller keeps capturing
+  // and hints the user instead of committing garbage like "SUPER + ?").
   function keyFromCode(code) {
     if (code >= Qt.Key_A && code <= Qt.Key_Z) return String.fromCharCode(code)
     if (code >= Qt.Key_0 && code <= Qt.Key_9) return String.fromCharCode(code)
     if (code >= Qt.Key_F1 && code <= Qt.Key_F35) return "F" + (code - Qt.Key_F1 + 1)
-    return "?"
+    var punct = {
+      "44": "comma", "46": "period", "47": "slash", "59": "semicolon",
+      "39": "apostrophe", "91": "bracketleft", "93": "bracketright",
+      "92": "backslash", "45": "minus", "61": "equal", "96": "grave"
+    }
+    return punct[String(code)] || ""
   }
 
   ColumnLayout {
     anchors.fill: parent
-    spacing: Style.space(10)
+    spacing: root.compact ? Style.space(6) : Style.space(10)
 
-    // capture well
+    // capture well — reads as an editable control: the chord in bold,
+    // a pencil affordance on hover, accent ring while capturing.
     Rectangle {
       Layout.fillWidth: true
-      Layout.preferredHeight: root.compact ? Style.space(64) : Style.space(76)
+      Layout.preferredHeight: root.compact ? Style.space(46) : Style.space(76)
       radius: Style.cornerRadius + 2
-      color: capturing ? Qt.alpha(Color.accent, 0.10) : Qt.alpha(Color.foreground, 0.04)
+      color: capturing ? Qt.alpha(Color.accent, 0.10)
+        : (wellMouse.containsMouse ? Qt.alpha(Color.foreground, 0.08) : Qt.alpha(Color.foreground, 0.04))
       border.width: capturing ? 2 : 1
-      border.color: capturing ? Color.accent : Color.popups.border
+      border.color: capturing || root.activeFocus ? Color.accent : Color.popups.border
       Behavior on border.color { ColorAnimation { duration: 140 } }
+      Behavior on color { ColorAnimation { duration: 140 } }
 
       MouseArea {
+        id: wellMouse
         anchors.fill: parent
-        onClicked: {
-          root.capturing = true
-          root.forceActiveFocus()
-        }
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: root.beginCapture()
       }
 
-      Column {
+      Row {
         anchors.centerIn: parent
-        spacing: Style.space(4)
+        spacing: Style.space(8)
 
         Text {
-          anchors.horizontalCenter: parent.horizontalCenter
+          anchors.verticalCenter: parent.verticalCenter
+          // Live while holding: held modifiers build up ("SUPER + SHIFT + …");
+          // the completed chord once captured. shownChord keeps the host's
+          // `chord` binding intact — see the property comment above.
           text: root.capturing
-            ? qsTr("Press a chord…  (Esc cancels, Backspace clears)")
-            : (root.chord !== "" ? root.chord : qsTr("Click, then press a chord"))
+            ? (root.heldMods.length > 0
+               ? root.heldMods.join(" + ") + "  +  …"
+               : qsTr("Press a chord…"))
+            : (root.shownChord !== "" ? root.shownChord : qsTr("Click, then press a chord"))
           color: root.capturing ? Color.accent
-            : (root.chord !== "" ? Color.foreground : Color.muted)
+            : (root.shownChord !== "" ? Color.foreground : Color.muted)
           font.family: Style.font.family
-          font.pixelSize: root.capturing || root.chord !== ""
-            ? Style.font.subtitle : Style.font.body
+          font.pixelSize: root.compact ? Style.font.body
+            : (root.capturing || root.shownChord !== "" ? Style.font.subtitle : Style.font.body)
           font.bold: true
+          elide: Text.ElideRight
+          width: Math.min(implicitWidth, root.width - Style.space(72))
           renderType: Text.NativeRendering
         }
 
+        // editable-control affordance: pencil while hovering, plus while idle
         Text {
-          anchors.horizontalCenter: parent.horizontalCenter
-          visible: !root.compact && root.chord !== ""
-          text: qsTr("saving rewrites the o.bind(\"%1\", …) line — no orphan binds").arg(root.chord)
-          color: Color.muted
+          anchors.verticalCenter: parent.verticalCenter
+          visible: !root.capturing
+          text: wellMouse.containsMouse ? "󰏫" : "󰏅"
+          color: root.shownChord !== "" ? Color.muted : Color.accent
+          opacity: wellMouse.containsMouse ? 1 : 0.7
           font.family: Style.font.family
           font.pixelSize: Style.font.caption
           renderType: Text.NativeRendering
         }
       }
+
+      Text {
+        anchors.bottom: parent.bottom
+        anchors.right: parent.right
+        anchors.margins: Style.space(4)
+        visible: root.capturing && !root.compact
+        text: qsTr("Esc cancels · Backspace clears")
+        color: Color.muted
+        opacity: 0.7
+        font.family: Style.font.family
+        font.pixelSize: Math.max(8, Style.font.caption * 0.8)
+        renderType: Text.NativeRendering
+      }
+    }
+
+    // live capture hint (unsupported key pressed, etc.)
+    Text {
+      visible: root.capturing && root.captureHint !== ""
+      Layout.fillWidth: true
+      wrapMode: Text.Wrap
+      text: root.captureHint
+      color: Color.muted
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      renderType: Text.NativeRendering
+    }
+
+    Text {
+      visible: !root.compact && root.shownChord !== ""
+      Layout.fillWidth: true
+      wrapMode: Text.Wrap
+      text: qsTr("saving rewrites the o.bind(\"%1\", …) line — no orphan binds").arg(root.shownChord)
+      color: Color.muted
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      renderType: Text.NativeRendering
     }
 
     // conflict banner
@@ -278,7 +428,7 @@ Item {
         text: (root.conflictIsOmarchy || root.conflictIsOtherScratchpad ? "⚠  " : "·  ") + root.conflictText
         color: (root.conflictIsOmarchy || root.conflictIsOtherScratchpad) ? Color.urgent : Color.muted
         font.family: Style.font.family
-        font.pixelSize: Style.font.bodySmall
+        font.pixelSize: root.compact ? Style.font.caption : Style.font.bodySmall
         renderType: Text.NativeRendering
       }
     }

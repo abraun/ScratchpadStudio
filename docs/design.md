@@ -77,10 +77,14 @@ changes and regenerates automatically. Documented in the README.
 - **Toggle flow** (`bin/scratchpad-studio toggle <id>`):
   if the special workspace is currently visible → hide it; else launch any
   configured apps whose window class is absent from `hyprctl -j clients`
-  (rules route them into the hidden special workspace), then reveal. No PID
-  tracking at all — presence is class-based, which is exactly the fix for
-  single-instance apps (Cider) and web apps (`chrome-<host>__-Default`
-  classes from `--app=URL`).
+  (rules route them into the hidden special workspace), then reveal, then
+  reflow (slots placement only). The reflow-on-reveal is what makes an
+  anchored scratchpad land in its saved arrangement every time: window
+  rules only fire at map time, so windows that drifted (dragged, or tiled
+  by a map that predated our rules) would otherwise reveal scattered.
+  No PID tracking at all — presence is class-based, which is exactly the
+  fix for single-instance apps (Cider) and web apps
+  (`chrome-<host>__-Default` classes from `--app=URL`).
 - **Never kills windows**: delete removes rules + state; windows that were
   living on the special workspace are moved to the current workspace
   first (unless empty).
@@ -98,11 +102,11 @@ changes and regenerates automatically. Documented in the README.
       "name": "Music",
       "icon": "audio-x-generic",        // icon-theme name or 1-2 char glyph
       "keybind": "SUPER + M",           // "" = unbound
-      "anchor": "top",                  // top|bottom|left|right
+      "anchor": "top",                  // top|bottom|left|right|center
       "sizePct": { "w": 60, "h": 50 },  // of usable monitor area
       "marginPx": 12,
       "layout": "single",               // single|pair|stacked|three-up|grid
-      "transition": "down",             // slide-in direction: down|up|right|left
+      "transition": "down",             // reveal: down|up|right|left|popin
       "placement": "slots",             // slots (baked geometry) | floating
       "apps": [
         {
@@ -183,9 +187,10 @@ Installed footprint (all created by `omarchy plugin add` + first run):
      Single-instance and web-app detection sets `class`/`singleInstance`
      automatically (known-apps table + `--app=` heuristics).
   3. Placement (arranged in slots / floating) + layout thumbnails
-     (single / pair / stacked / three-up / grid) + anchor + size sliders
-     (percent) + margin; the slot controls hide for floating.
-  4. Transition: from-top/bottom/left/right with a small motion preview
+     (single / pair / stacked / three-up / grid) + anchor (incl. center)
+     + size sliders (percent) + margin; the slot controls hide for floating.
+  4. Transition: from-top/bottom/left/right or centered pop-in, with a
+     small motion preview
      (the reveal itself follows Hyprland's specialWorkspace animation;
      the choice drives window `animation` rule + anchor defaults).
   5. Keybind: press-to-capture, live conflict check against
@@ -200,11 +205,15 @@ Installed footprint (all created by `omarchy plugin add` + first run):
   (Ctrl+←/→ by keyboard; single/stacked layouts cascade their cards so
   overlaid slots stay editable), Del removes the selected app, Ctrl+A /
   **Add app** opens the shared picker overlay, a corner handle resizes
-  the frame (sizePct), and the keybind is re-captured in place (Ctrl+K;
-  the scratchpad's own chord is excluded from conflict detection while
-  editing). Anchor, slide-in, placement and name/icon round it out;
-  Ctrl+Enter saves through `upsert` (regenerate → relocate → reflow),
-  Esc cancels — restoring the pre-test state if "Test it now" ran.
+  the frame (sizePct), and the keybind is an editable control: click the
+  chip or Ctrl+K, hold modifiers in any order (they build up live),
+  press the final key to complete the chord, Esc cancels — the
+  scratchpad's own chord is excluded from conflict detection while
+  editing. Anchor (incl. center), slide-in (incl. pop-in), placement and
+  name/icon round it out; Ctrl+Enter saves through `upsert`
+  (regenerate → relocate → reflow), Esc cancels — restoring the pre-test
+  state if "Test it now" ran. "Test it now" serializes upsert before
+  the toggle so the reveal can never race the config reload.
 - **Theming**: `qs.Commons` `Color`/`Style` singletons — palette from
   `~/.local/state/omarchy/current/theme/colors.toml` via the shell; spacing
   via `Style.space()`; the shell re-reads on theme change, so the plugin

@@ -196,7 +196,9 @@ Panel {
 
   function openWindow() {
     studioWindow.visible = true
-    studioWindow.raise()
+    // FloatingWindow exposes no raise() in this Quickshell build (calling
+    // it logged a TypeError on every open) — showing is what matters.
+    if (typeof studioWindow.raise === "function") studioWindow.raise()
   }
 
   // ---------------- bar icon ----------------
@@ -224,7 +226,7 @@ Panel {
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(936))
     contentHeight: panel.fittedContentHeight(
-      headerRow.height + (detail !== "" ? Style.space(600) : overview.contentHeightNeeded())
+      headerRow.height + (detail === "editor" ? Style.space(640) : detail !== "" ? Style.space(600) : overview.contentHeightNeeded())
       + Style.space(10), Style.space(680))
 
     PanelKeyCatcher {
@@ -316,7 +318,7 @@ Panel {
             width: panelFlick.width
             height: Math.max(overview.visible ? overview.contentHeightNeeded() : 0,
                              wizard.visible ? Style.space(600) : 0,
-                             editor.visible ? Style.space(600) : 0)
+                             editor.visible ? Style.space(640) : 0)
 
             Overview {
               id: overview

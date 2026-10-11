@@ -159,10 +159,13 @@ Item {
 
   function testNow() {
     if (demo) return
-    runHelper("upsert", JSON.stringify(draft))
-    Qt.callLater(function() {
-      runHelper(["toggle", draft.id || "scratchpad"])
-    })
+    // Serialized on purpose: upsert (regenerate → reload → relocate →
+    // reflow) must finish BEFORE the toggle reveals the scratchpad —
+    // the old fire-and-forget pair raced the reload and the captain saw
+    // windows land scattered when testing.
+    var upsert = JSON.stringify(helperPath()) + " upsert <<< " + shellQuote(JSON.stringify(draft))
+    var toggle = JSON.stringify(helperPath()) + " toggle " + shellQuote(draft.id || "scratchpad")
+    Quickshell.execDetached(["bash", "-c", upsert + " && " + toggle + " 2>&1"])
     tested = true
   }
 
@@ -179,7 +182,8 @@ Item {
     { id: "down",  label: qsTr("From top"),    glyph: "󰁝", anchor: "top" },
     { id: "up",    label: qsTr("From bottom"), glyph: "󰁅", anchor: "bottom" },
     { id: "right", label: qsTr("From left"),   glyph: "󰁔", anchor: "left" },
-    { id: "left",  label: qsTr("From right"),  glyph: "󰁠", anchor: "right" }
+    { id: "left",  label: qsTr("From right"),  glyph: "󰁠", anchor: "right" },
+    { id: "popin", label: qsTr("Centered"),    glyph: "◎", anchor: "center" }
   ]
 
   ColumnLayout {
@@ -630,6 +634,7 @@ Item {
           renderType: Text.NativeRendering
         }
 
+        // geometry controls: anchor glyphs (center included) + live size
         RowLayout {
           visible: root.slots
           Layout.fillWidth: true
@@ -638,14 +643,21 @@ Item {
           Row {
             spacing: Style.space(4)
             Repeater {
-              model: ["top", "bottom", "left", "right"]
+              model: [
+                { id: "top",    glyph: "󰁝" },
+                { id: "bottom", glyph: "󰁅" },
+                { id: "left",   glyph: "󰁔" },
+                { id: "right",  glyph: "󰁠" },
+                { id: "center", glyph: "◎" }
+              ]
               Button {
-                required property string modelData
-                text: modelData
+                required property var modelData
+                text: modelData.glyph
+                tooltipText: qsTr("anchor: %1").arg(modelData.id)
                 fontSize: Style.font.caption
-                selected: root.draft && root.draft.anchor === modelData
+                selected: root.draft && root.draft.anchor === modelData.id
                 onClicked: {
-                  root.draft.anchor = modelData
+                  root.draft.anchor = modelData.id
                   root.touch()
                 }
               }
@@ -664,9 +676,51 @@ Item {
             renderType: Text.NativeRendering
           }
         }
+
+        // slide-in (appear behavior) — beside the anchor it steers; the
+        // center entry pairs a centered anchor with a pop-in reveal.
+        RowLayout {
+          Layout.fillWidth: true
+          spacing: Style.space(12)
+
+          Text {
+            text: qsTr("Slide-in")
+            color: Color.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            renderType: Text.NativeRendering
+          }
+
+          Row {
+            spacing: Style.space(4)
+            Repeater {
+              model: root.directions
+              Button {
+                required property var modelData
+                text: modelData.glyph
+                tooltipText: modelData.label
+                fontSize: Style.font.caption
+                selected: root.draft && root.draft.transition === modelData.id
+                onClicked: root.setTransition(modelData)
+              }
+            }
+          }
+
+          Item { Layout.fillWidth: true; height: 1 }
+
+          Text {
+            visible: root.draft && root.draft.transition === "popin"
+            text: qsTr("windows pop in at the center anchor")
+            color: Color.muted
+            opacity: 0.7
+            font.family: Style.font.family
+            font.pixelSize: Style.font.caption
+            renderType: Text.NativeRendering
+          }
+        }
       }
 
-      // ======== right: apps, arrangement, slide-in, keybind ========
+      // ======== right: apps, arrangement, keybind ========
       ColumnLayout {
         Layout.preferredWidth: Style.space(300)
         Layout.fillHeight: true
@@ -675,8 +729,9 @@ Item {
         // apps list
         Rectangle {
           Layout.fillWidth: true
-          Layout.preferredHeight: Math.min(Style.space(158),
-            Style.space(34) * Math.max(1, root.appCount) + Style.space(84))
+          Layout.fillHeight: true
+          Layout.preferredHeight: Math.min(Style.space(150),
+            Style.space(30) * Math.max(1, root.appCount) + Style.space(64))
           radius: Style.cornerRadius
           color: Qt.alpha(Color.foreground, 0.035)
           border.width: 1
@@ -888,6 +943,7 @@ Item {
 
             LayoutThumbRow {
               Layout.fillWidth: true
+              compact: true
               layoutId: root.draft ? root.draft.layout : "single"
               placement: root.draft ? root.draft.placement : "slots"
               count: Math.max(1, root.appCount)
@@ -897,10 +953,12 @@ Item {
           }
         }
 
-        // slide-in
+        // keybind — an editable control, not a label: click the chip (or
+        // Ctrl+K) to re-capture; conflicts surface inline. Fixed height so
+        // the column can never push it under the footer again.
         Rectangle {
           Layout.fillWidth: true
-          Layout.preferredHeight: Style.space(64)
+          Layout.preferredHeight: Style.space(148)
           radius: Style.cornerRadius
           color: Qt.alpha(Color.foreground, 0.035)
           border.width: 1
@@ -909,66 +967,42 @@ Item {
           ColumnLayout {
             anchors.fill: parent
             anchors.margins: Style.space(8)
-            spacing: Style.space(4)
+            spacing: Style.space(6)
 
-            Text {
-              text: qsTr("Slide-in")
-              color: Color.muted
-              font.family: Style.font.family
-              font.pixelSize: Style.font.caption
-              renderType: Text.NativeRendering
-            }
-
-            Row {
-              spacing: Style.space(4)
-              Repeater {
-                model: root.directions
-                Button {
-                  required property var modelData
-                  text: modelData.glyph + " " + modelData.id
-                  fontSize: Style.font.caption
-                  selected: root.draft && root.draft.transition === modelData.id
-                  onClicked: root.setTransition(modelData)
-                }
+            RowLayout {
+              Layout.fillWidth: true
+              Text {
+                text: qsTr("Keybind")
+                color: Color.muted
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+                renderType: Text.NativeRendering
+              }
+              Item { Layout.fillWidth: true; height: 1 }
+              Text {
+                text: qsTr("Ctrl+K to rebind")
+                color: Color.muted
+                opacity: 0.7
+                font.family: Style.font.family
+                font.pixelSize: Math.max(8, Style.font.caption * 0.85)
+                renderType: Text.NativeRendering
               }
             }
-          }
-        }
 
-        // keybind
-        Rectangle {
-          Layout.fillWidth: true
-          Layout.fillHeight: true
-          radius: Style.cornerRadius
-          color: Qt.alpha(Color.foreground, 0.035)
-          border.width: 1
-          border.color: Color.popups.border
-
-          KeybindCapture {
-            id: keybindCapture
-            anchors.fill: parent
-            anchors.margins: Style.space(8)
-            compact: true
-            chord: root.draft ? root.draft.keybind : ""
-            selfId: root.draft ? root.draft.id : ""
-            selfName: root.draft ? root.draft.name : ""
-            onChordEdited: function(chord) {
-              if (!root.draft) return
-              root.draft.keybind = chord
-              root.touch()
+            KeybindCapture {
+              id: keybindCapture
+              Layout.fillWidth: true
+              Layout.fillHeight: true
+              compact: true
+              chord: root.draft ? root.draft.keybind : ""
+              selfId: root.draft ? root.draft.id : ""
+              selfName: root.draft ? root.draft.name : ""
+              onChordEdited: function(chord) {
+                if (!root.draft) return
+                root.draft.keybind = chord
+                root.touch()
+              }
             }
-          }
-
-          Text {
-            anchors.bottom: parent.bottom
-            anchors.right: parent.right
-            anchors.margins: Style.space(6)
-            text: qsTr("Ctrl+K to rebind")
-            color: Color.muted
-            opacity: 0.6
-            font.family: Style.font.family
-            font.pixelSize: Math.max(8, Style.font.caption * 0.85)
-            renderType: Text.NativeRendering
           }
         }
       }
