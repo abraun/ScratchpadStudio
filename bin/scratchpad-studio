@@ -59,6 +59,126 @@ SINGLE_INSTANCE_CLASSES = {
     "1password", "bitwarden", "signal", "telegramdesktop", "whatsapp",
 }
 
+SINGLE_INSTANCE_BINARIES = {
+    "cider", "spotube", "youtube-music", "webcord", "discord", "slack",
+    "1password", "bitwarden", "signal", "telegram-desktop", "whatsapp",
+    "spotify", "steam", "obs", "zoom", "teams", "thunderbird",
+}
+
+
+# ------------------------------------------------------- app catalogue
+
+def _parse_desktop_file(path: Path) -> dict | None:
+    entry: dict = {}
+    section = None
+    try:
+        for raw in path.read_text(errors="replace").splitlines():
+            line = raw.strip()
+            if line.startswith("[") and line.endswith("]"):
+                section = line[1:-1]
+                continue
+            if section != "Desktop Entry" or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            entry[key.strip()] = value.strip()
+    except OSError:
+        return None
+    if entry.get("Type") != "Application" or not entry.get("Exec"):
+        return None
+    if entry.get("NoDisplay", "").lower() in ("true", "1"):
+        return None
+    return entry
+
+
+def _exec_binary(exec_line: str) -> str:
+    """First non-flag token of an Exec line, field codes stripped."""
+    tokens = [t for t in exec_line.replace("%f", "").replace("%F", "")
+              .replace("%u", "").replace("%U", "").replace("%d", "")
+              .replace("%D", "").replace("%n", "").replace("%N", "")
+              .replace("%i", "").replace("%c", "").replace("%k", "")
+              .replace("%v", "").split() if not t.startswith("-")]
+    return tokens[0].split("/")[-1] if tokens else ""
+
+
+def _webapp_host(url: str) -> str:
+    host = url.split("//", 1)[-1].split("/", 1)[0]
+    return host[4:] if host.startswith("www.") else host
+
+
+def webapp_class(url: str) -> str:
+    host = _webapp_host(url)
+    return f"chrome-{host}__-Default"
+
+
+def app_catalogue() -> list:
+    """Installed apps from .desktop files, merged across system, Omarchy's
+    webapps, and the user's local entries. Later dirs win by id."""
+    dirs = [
+        Path("/usr/share/applications"),
+        Path("/usr/share/omarchy/applications"),
+        Path(os.environ.get("XDG_DATA_HOME", str(HOME / ".local/share"))) / "applications",
+    ]
+    by_id: dict = {}
+    for directory in dirs:
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("*.desktop")):
+            entry = _parse_desktop_file(path)
+            if entry is None:
+                continue
+            exec_line = entry.get("Exec", "")
+            webapp = exec_line.startswith("omarchy-launch-webapp")
+            url = ""
+            if webapp and len(exec_line.split()) > 1:
+                url = exec_line.split()[1].strip('\"\'')
+            binary = _exec_binary(exec_line)
+            if webapp:
+                wm_class = webapp_class(url)
+            else:
+                wm_class = entry.get("StartupWMClass") or binary
+            single = (
+                not webapp
+                and (wm_class.lower() in SINGLE_INSTANCE_CLASSES
+                     or binary.lower() in SINGLE_INSTANCE_BINARIES)
+            )
+            by_id[path.stem] = {
+                "id": path.stem,
+                "name": entry.get("Name") or path.stem,
+                "icon": entry.get("Icon") or "",
+                "exec": exec_line,
+                "command": exec_line if webapp else " ".join(
+                    t for t in exec_line.split() if not t.startswith("%")
+                ),
+                "wmClass": wm_class,
+                "webapp": webapp,
+                "url": url,
+                "singleInstance": single,
+                "comment": entry.get("Comment") or entry.get("GenericName") or "",
+            }
+    apps = sorted(by_id.values(), key=lambda a: a["name"].lower())
+    return apps
+
+
+def cmd_apps() -> None:
+    print(json.dumps(app_catalogue(), indent=2))
+
+
+def cmd_upsert() -> None:
+    """Merge one scratchpad (JSON on stdin) into state, save, apply."""
+    try:
+        raw = json.loads(sys.stdin.read())
+    except json.JSONDecodeError as error:
+        die(f"stdin is not valid JSON: {error}")
+    sp = normalize_sp(raw)
+    state = load_state()
+    kept = [s for s in state["scratchpads"] if s["id"] != sp["id"]]
+    kept.append(sp)
+    kept.sort(key=lambda s: s["name"].lower())
+    state["scratchpads"] = kept
+    save_state(state)
+    apply(quiet=True)
+    print(json.dumps({"id": sp["id"]}))
+
 
 def die(message: str, code: int = 1) -> None:
     print(f"scratchpad-studio: {message}", file=sys.stderr)
@@ -731,7 +851,7 @@ def strip_managed(content: str) -> str:
     return before + after
 
 
-def cmd_conflicts(chord: str) -> None:
+def cmd_conflicts(chord: str, as_json: bool = False) -> None:
     import glob
     binds = hyprctl_json(["-j", "binds"])
     live = find_bind_conflict(chord, binds)
@@ -740,12 +860,27 @@ def cmd_conflicts(chord: str) -> None:
         for path in sorted(set(glob.glob(str(HYPR_DIR / pattern)))):
             files[Path(path).name] = Path(path).read_text()
     config_hits = [hit for hit in scan_config_chords(files) if hit[0] == chord]
-    print(json.dumps({
+    payload = {
         "chord": chord,
         "valid": chord_modmask(chord) is not None,
         "liveBind": live,
         "configLines": config_hits,
-    }, indent=2))
+    }
+    if as_json:
+        print(json.dumps(payload))
+    else:
+        print(json.dumps(payload, indent=2))
+
+
+def cmd_binds_json() -> None:
+    """Slim live-bind list for suggestion math: [{modmask, key, description}]."""
+    binds = hyprctl_json(["-j", "binds"])
+    slim = [
+        {"modmask": b.get("modmask", 0), "key": b.get("key", ""),
+         "description": b.get("description", "")}
+        for b in binds
+    ]
+    print(json.dumps(slim))
 
 
 # ---------------------------------------------------------------- commands
@@ -825,6 +960,14 @@ def main(argv: list[str]) -> None:
         uninstall("--purge" in argv)
     elif command == "conflicts" and len(argv) == 3:
         cmd_conflicts(argv[2])
+    elif command == "conflicts-json" and len(argv) == 3:
+        cmd_conflicts(argv[2], as_json=True)
+    elif command == "binds-json":
+        cmd_binds_json()
+    elif command == "apps":
+        cmd_apps()
+    elif command == "upsert":
+        cmd_upsert()
     elif command == "state-path":
         print(STATE_PATH)
     elif command == "version":

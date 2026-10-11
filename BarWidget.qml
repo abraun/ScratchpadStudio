@@ -128,7 +128,46 @@ Panel {
   property var deleteTarget: null
 
   function newScratchpad() {
-    console.warn("scratchpad-studio: wizard lands in milestone c")
+    wizardScratchpad = null
+    wizardMode = true
+  }
+
+  function editScratchpad(card) {
+    var sp = findStateScratchpad(card.id)
+    if (!sp) return
+    wizardScratchpad = sp
+    wizardMode = true
+  }
+
+  function findStateScratchpad(id) {
+    var sps = (root.state && root.state.scratchpads) || []
+    for (var i = 0; i < sps.length; i++) {
+      if (sps[i].id === id) return sps[i]
+    }
+    return null
+  }
+
+  function duplicateScratchpad(card) {
+    var sp = findStateScratchpad(card.id)
+    if (!sp) return
+    var copy = JSON.parse(JSON.stringify(sp))
+    copy.id = copy.id + "-copy"
+    copy.name = copy.name + " copy"
+    copy.keybind = ""
+    wizardScratchpad = copy
+    wizardMode = true
+  }
+
+  function closeWizard() {
+    wizardMode = false
+    wizardScratchpad = null
+  }
+
+  property bool wizardMode: false
+  property var wizardScratchpad: null
+  readonly property var monitorInfo: {
+    var m = Hyprland.focusedMonitor
+    return m ? { width: m.width || 0, height: m.height || 0, scale: m.scale || 1, name: m.name || "" } : null
   }
 
   function openWindow() {
@@ -161,7 +200,9 @@ Panel {
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(936))
     contentHeight: panel.fittedContentHeight(
-      headerRow.height + overview.height + Style.space(10), Style.space(680))
+      headerRow.height + Math.max(overview.visible ? overview.height : 0,
+                                 wizard.visible ? wizard.height : 0)
+      + Style.space(10), Style.space(680))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -244,9 +285,10 @@ Panel {
             }
           }
 
-          // ---------- grid ----------
+          // ---------- content: overview or wizard ----------
           Overview {
             id: overview
+            visible: !root.wizardMode
             width: parent.width
             height: Math.max(Style.space(160),
                              overview.rows * (overview.cardH + overview.gridGap) + overview.gridGap)
@@ -255,11 +297,25 @@ Panel {
             compact: true
 
             onToggleRequested: function(card) { root.toggleScratchpad(card) }
-            onEditRequested: function(card) { console.warn("scratchpad-studio: wizard lands in milestone c:", card.id) }
+            onEditRequested: function(card) { root.editScratchpad(card) }
             onDeleteRequested: function(card) { root.deleteScratchpad(card) }
-            onDuplicateRequested: function(card) { console.warn("scratchpad-studio: duplicate lands in milestone c:", card.id) }
+            onDuplicateRequested: function(card) { root.duplicateScratchpad(card) }
             onAdoptRequested: function(card) { root.helper(["adopt", card.id]) }
             onNewRequested: root.newScratchpad()
+          }
+
+          Wizard {
+            id: wizard
+            visible: root.wizardMode
+            width: parent.width
+            height: Math.max(Style.space(160),
+                             overview.rows * (overview.cardH + overview.gridGap) + overview.gridGap)
+            editScratchpad: root.wizardScratchpad
+            demo: root.demoMode
+            monitor: root.monitorInfo
+
+            onFinished: function(sp) { root.closeWizard() }
+            onCanceled: root.closeWizard()
           }
         }
       }
@@ -299,11 +355,13 @@ Panel {
     function close(): void { root.close() }
     function toggle(): void { root.toggle() }
     function window(): string { root.openWindow(); return "ok" }
+    function startWizard(): void { root.open(); Qt.callLater(root.newScratchpad) }
+    function wizardStep(n: int): void { wizard.step = n; wizard.forceActiveFocus() }
     function demo(mode: string): void {
       root.demoMode = String(mode) === "on" || String(mode) === "true"
     }
     function status(): string {
-      return "demo=" + root.demoMode + " scratchpads=" + root.cards.length
+      return "v3 demo=" + root.demoMode + " scratchpads=" + root.cards.length
         + " helper=" + (root.helperPath.length > 0 ? "ok" : "?")
     }
     function inspect(): string {

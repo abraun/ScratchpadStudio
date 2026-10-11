@@ -93,14 +93,20 @@ FloatingWindow {
       demo: root.demo
 
       onToggleRequested: function(card) { hostWidget && hostWidget.toggleScratchpad(card) }
-      onEditRequested: function(card) { console.warn("wizard lands in milestone c:", card.id) }
+      onEditRequested: function(card) { hostWidget && hostWidget.editScratchpad(card) }
       onDeleteRequested: function(card) { hostWidget && hostWidget.deleteScratchpad(card) }
-      onDuplicateRequested: function(card) { console.warn("duplicate lands in milestone c:", card.id) }
+      onDuplicateRequested: function(card) { hostWidget && hostWidget.duplicateScratchpad(card) }
       onAdoptRequested: function(card) { hostWidget && hostWidget.helper(["adopt", card.id]) }
       onNewRequested: hostWidget && hostWidget.newScratchpad()
     }
   }
 
-  Keys.onEscapePressed: root.visible = false
-  Component.onCompleted: forceActiveFocus()
+  // FloatingWindow is a Window, not an Item — Keys doesn't attach, so a
+  // Shortcut on the content does Esc-close instead.
+  Shortcut {
+    sequence: "Esc"
+    context: Qt.WindowShortcut
+    onActivated: root.visible = false
+  }
+  Component.onCompleted: root.contentItem.forceActiveFocus()
 }
