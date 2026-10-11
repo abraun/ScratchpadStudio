@@ -4,12 +4,16 @@ import QtQuick.Layouts
 import Quickshell
 import qs.Commons
 import qs.Ui
+import "../../lib/StudioState.js" as StudioState
 
 // BasicsStep — name and icon glyph, with a live card preview of the header.
 Item {
   id: root
 
   property var draft: null
+  // Every scratchpad id that exists (plus the reserved built-in), from
+  // the host — see takenIds below.
+  property var existingIds: []
   signal touched()
 
   ColumnLayout {
@@ -49,7 +53,11 @@ Item {
         onTextChanged: {
           if (!root.draft) return
           root.draft.name = text
-          root.draft.id = slugify(text)
+          // Free id for the name: sharing a special workspace with another
+          // scratchpad (or Omarchy's built-in special:scratchpad) would
+          // make both chords toggle the same windows. The preview shows
+          // the exact special:<id> the scratchpad will get.
+          root.draft.id = StudioState.uniqueId(slugify(text), root.takenIds)
           root.touched()
         }
         Keys.onEscapePressed: event.accepted = false  // wizard handles Esc
@@ -166,5 +174,28 @@ Item {
   function slugify(text) {
     var s = String(text || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
     return s.length > 0 ? s.slice(0, 32) : ""
+  }
+
+  // Ids a NEW scratchpad must not take: every existing one, plus
+  // "scratchpad" — Omarchy's built-in special (SUPER+S). Editing keeps
+  // the scratchpad's own id available so re-typing its name is stable.
+  readonly property var takenIds: {
+    var ids = (existingIds || []).slice(0)
+    var own = editScratchpad && !duplicate ? editScratchPadId() : ""
+    if (own !== "") {
+      var filtered = []
+      for (var i = 0; i < ids.length; i++)
+        if (ids[i] !== own) filtered.push(ids[i])
+      ids = filtered
+    }
+    return ids
+  }
+
+  // The wizard passes the scratchpad being edited (null for create).
+  property var editScratchpad: null
+  property bool duplicate: false
+
+  function editScratchPadId() {
+    return editScratchpad ? String(editScratchpad.id || "") : ""
   }
 }

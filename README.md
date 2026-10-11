@@ -95,6 +95,11 @@ Scratchpad Studio manages **named special workspaces** natively:
   away or tiled. Single-instance apps (Cider, Discord, …) match by class
   with no process tracking, so launchers that exit immediately still
   work; web apps match their `chrome-<host>__-Default` class.
+- Every scratchpad owns its own `special:<id>` workspace, and ids are
+  unique — `special:scratchpad` is Omarchy's built-in (your SUPER+S
+  toggles it), so the plugin never assigns that id; a scratchpad named
+  "Scratchpad" simply becomes `special:scratchpad-2`. No two
+  scratchpads ever share a workspace, so chords never cross wires.
 - Keybinds are `o.bind()` lines in the generated file, included from a
   clearly-marked managed block in `bindings.lua`. The file is regenerated
   from state on every save, so a changed chord replaces the old line —

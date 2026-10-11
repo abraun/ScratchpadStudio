@@ -20,6 +20,9 @@ Item {
   property bool duplicate: false          // editScratchpad is an unsaved copy
   property bool demo: false
   property var monitor: null               // {width, height, scale} for previews
+  // All taken scratchpad ids plus the reserved built-in, for free-id
+  // assignment in the first step (see StudioState.uniqueId).
+  property var existingIds: []
 
   signal finished(var scratchpad)
   signal canceled()
@@ -131,7 +134,10 @@ Item {
     if (demo) return
     runHelper("upsert", JSON.stringify(draft))
     Qt.callLater(function() {
-      runHelper(["toggle", draft.id || "scratchpad"])
+      // Never fall back to "scratchpad" — that is Omarchy's built-in
+      // special; toggling it from here would be exactly the shared-
+      // workspace confusion unique_id exists to prevent.
+      if (draft.id) runHelper(["toggle", draft.id])
     })
     tested = true
   }
@@ -193,7 +199,13 @@ Item {
       Layout.fillHeight: true
       currentIndex: root.step
 
-      BasicsStep { draft: root.draft; onTouched: root.touch() }
+      BasicsStep {
+        draft: root.draft
+        existingIds: root.existingIds
+        editScratchpad: root.editScratchpad
+        duplicate: root.duplicate
+        onTouched: root.touch()
+      }
       AppsStep { draft: root.draft; demo: root.demo; onTouched: root.touch() }
       LayoutStep { draft: root.draft; usable: root.usable(); onTouched: root.touch() }
       TransitionStep { draft: root.draft; onTouched: root.touch() }

@@ -164,8 +164,11 @@ Item {
     // the old fire-and-forget pair raced the reload and the captain saw
     // windows land scattered when testing.
     var upsert = JSON.stringify(helperPath()) + " upsert <<< " + shellQuote(JSON.stringify(draft))
-    var toggle = JSON.stringify(helperPath()) + " toggle " + shellQuote(draft.id || "scratchpad")
-    Quickshell.execDetached(["bash", "-c", upsert + " && " + toggle + " 2>&1"])
+    var toggleId = draft && draft.id ? draft.id : ""
+    var command = upsert + (toggleId !== ""
+      ? " && " + JSON.stringify(helperPath()) + " toggle " + shellQuote(toggleId)
+      : "")
+    Quickshell.execDetached(["bash", "-c", command + " 2>&1"])
     tested = true
   }
 

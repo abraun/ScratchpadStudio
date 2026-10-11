@@ -94,8 +94,16 @@ FloatingWindow {
 
     // ---------- content: overview, wizard, or editor (mirrors the panel) ----------
     Item {
+      id: windowContent
       width: parent.width
       height: parent.height - Style.space(32) - Style.space(10) - 2 - Style.space(10)
+
+      // The delete dialog owns the keyboard while open (arrows move its
+      // selection, Enter confirms, Esc cancels) — the content item holds
+      // focus in overview mode, so keys arrive here first.
+      Keys.onPressed: function(event) {
+        if (winDeleteDialog.opened) event.accepted = winDeleteDialog.handleKey(event)
+      }
 
       Overview {
         id: overview
@@ -118,6 +126,7 @@ FloatingWindow {
         editScratchpad: hostWidget ? hostWidget.wizardScratchpad : null
         duplicate: hostWidget ? hostWidget.wizardDuplicate : false
         demo: root.demo
+        existingIds: hostWidget ? hostWidget.stateIds : []
         monitor: {
           var m = Hyprland.focusedMonitor
           return m ? { width: m.width || 0, height: m.height || 0, scale: m.scale || 1, name: m.name || "" } : null
@@ -141,15 +150,38 @@ FloatingWindow {
         onSaved: function(sp) { hostWidget && hostWidget.closeDetail() }
         onCanceled: hostWidget && hostWidget.closeDetail()
       }
+
+      // Delete confirm centered over the window content (the panel hosts
+      // its own copy); `deleteOpen` on the shared widget drives both, so
+      // confirming in either surface closes both.
+      ConfirmDialog {
+        id: winDeleteDialog
+        anchors.fill: parent
+        opened: hostWidget ? hostWidget.deleteOpen : false
+        message: hostWidget && hostWidget.deleteTarget
+          ? qsTr("Delete “%1”? Its windows move to the current workspace and stay open.").arg(hostWidget.deleteTarget.name)
+          : ""
+        confirmText: qsTr("Delete")
+        onConfirmed: hostWidget && hostWidget.confirmDelete()
+        onCanceled: hostWidget && hostWidget.cancelDelete()
+      }
     }
   }
 
   // FloatingWindow is a Window, not an Item — Keys doesn't attach, so a
-  // Shortcut on the content does Esc-close instead.
+  // Shortcut on the content does Esc-close instead. Esc cancels an open
+  // delete dialog before it ever closes the window.
   Shortcut {
     sequence: "Esc"
     context: Qt.WindowShortcut
-    onActivated: root.visible = false
+    onActivated: {
+      if (root.hostWidget && root.hostWidget.deleteOpen) root.hostWidget.cancelDelete()
+      else root.visible = false
+    }
   }
   Component.onCompleted: root.contentItem.forceActiveFocus()
+
+  // Hiding the window cancels any pending delete confirm — the shared
+  // `deleteOpen` must not resurface the dialog next time the window opens.
+  onVisibleChanged: if (!visible && hostWidget) hostWidget.cancelDelete()
 }

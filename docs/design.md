@@ -88,6 +88,14 @@ changes and regenerates automatically. Documented in the README.
 - **Never kills windows**: delete removes rules + state; windows that were
   living on the special workspace are moved to the current workspace
   first (unless empty).
+- **Ids are unique and never the built-in**: `special:scratchpad` is
+  Omarchy's own (its SUPER+S bind toggles it), so it is reserved — a
+  new scratchpad slugged "scratchpad" gets `scratchpad-2`, and ids that
+  collide with another scratchpad chain forward too. Two scratchpads
+  sharing one special workspace would make their chords toggle the same
+  windows (the exact SUPER+S/SUPER+D confusion the captain hit). The
+  wizard assigns free ids live in the name step; the helper enforces it
+  for direct CLI use, and `adopt` refuses the built-in outright.
 
 ## Data model
 

@@ -133,12 +133,36 @@ Panel {
     helper(["toggle", card.id])
   }
 
+  // Deleting never kills windows — the helper moves them out first — but
+  // it removes the keybind and rules, so it deserves an explicit confirm.
+  // `deleteOpen` drives BOTH surfaces' dialogs: whichever is visible shows
+  // its own centered confirm, and confirming in either closes both (the
+  // v0.1 dialog hung directly off this Panel with no size — it rendered
+  // its buttons clamped to the top-left corner and, because `opened` was
+  // never reset, stayed stuck there after the delete).
   function deleteScratchpad(card) {
     deleteTarget = card
-    deleteDialog.opened = true
+    deleteOpen = true
   }
 
+  function confirmDelete() {
+    if (root.deleteTarget && !root.demoMode) root.helper(["delete", root.deleteTarget.id])
+    deleteTarget = null
+    deleteOpen = false
+  }
+
+  function cancelDelete() {
+    deleteTarget = null
+    deleteOpen = false
+  }
+
+  // A modal confirm must not outlive its panel: closing the panel (click
+  // away, Esc from the bar, panel switch) cancels any pending delete so
+  // it cannot reappear the next time the panel opens.
+  onOpenedChanged: if (!opened) cancelDelete()
+
   property var deleteTarget: null
+  property bool deleteOpen: false
 
   function newScratchpad() {
     wizardScratchpad = null
@@ -162,6 +186,17 @@ Panel {
       if (sps[i].id === id) return sps[i]
     }
     return null
+  }
+
+  // Every taken scratchpad id plus the reserved built-in "scratchpad"
+  // (Omarchy's special:scratchpad, SUPER+S) — the wizard's first step
+  // assigns the new scratchpad a free id from this list so two
+  // scratchpads never share one special workspace.
+  readonly property var stateIds: {
+    var sps = (state && state.scratchpads) || []
+    var ids = ["scratchpad"]
+    for (var i = 0; i < sps.length; i++) ids.push(sps[i].id)
+    return ids
   }
 
   function duplicateScratchpad(card) {
@@ -234,12 +269,28 @@ Panel {
       anchors.fill: parent
       // The wizard/editor own the keyboard while open: their TextFields
       // eat typing and chord capture needs raw keys (arrows included).
+      // The delete dialog owns it while open — arrows move its selection,
+      // Enter confirms, Esc cancels (instead of closing the panel).
       blocked: root.detail !== ""
 
-      onMoveRequested: function(dx, dy) { overview.moveCursor(dx, dy) }
-      onActivateRequested: overview.activate()
-      onCloseRequested: root.close()
-      onTabRequested: function(direction) { root.switchPanel(direction) }
+      onMoveRequested: function(dx, dy) {
+        if (root.deleteOpen && dx !== 0)
+          panelDeleteDialog.selectedIndex = panelDeleteDialog.selectedIndex === 0 ? 1 : 0
+        else overview.moveCursor(dx, dy)
+      }
+      onActivateRequested: {
+        if (root.deleteOpen) root.confirmDelete()
+        else overview.activate()
+      }
+      onCloseRequested: {
+        if (root.deleteOpen) root.cancelDelete()
+        else root.close()
+      }
+      onTabRequested: function(direction) {
+        if (root.deleteOpen)
+          panelDeleteDialog.selectedIndex = panelDeleteDialog.selectedIndex === 0 ? 1 : 0
+        else root.switchPanel(direction)
+      }
       onTextKey: function(t) {
         if (t === "n" || t === "N") root.newScratchpad()
         else if (t === "w" || t === "W") root.openWindow()
@@ -349,6 +400,7 @@ Panel {
               duplicate: root.wizardDuplicate
               demo: root.demoMode
               monitor: root.monitorInfo
+              existingIds: root.stateIds
 
               onFinished: function(sp) { root.closeDetail() }
               onCanceled: root.closeDetail()
@@ -368,6 +420,23 @@ Panel {
           }
         }
       }
+
+      // Delete confirm, hosted where it belongs: filling the panel card
+      // so the scrim covers the content and the dialog centers over it
+      // (the v0.1 copy hung off the sizeless Panel root and clamped to
+      // the top-left corner, stuck there because `opened` never reset).
+      // Declared after the Flickable so it paints above the content.
+      ConfirmDialog {
+        id: panelDeleteDialog
+        anchors.fill: parent
+        opened: root.deleteOpen
+        message: root.deleteTarget
+          ? qsTr("Delete “%1”? Its windows move to the current workspace and stay open.").arg(root.deleteTarget.name)
+          : ""
+        confirmText: qsTr("Delete")
+        onConfirmed: root.confirmDelete()
+        onCanceled: root.cancelDelete()
+      }
     }
   }
 
@@ -380,20 +449,11 @@ Panel {
     demo: root.demoMode
   }
 
-  // Deleting never kills windows — the helper moves them out first — but it
-  // removes the keybind and rules, so it deserves an explicit confirm.
-  ConfirmDialog {
-    id: deleteDialog
-    message: root.deleteTarget
-      ? qsTr("Delete “%1”? Its windows move to the current workspace and stay open.").arg(root.deleteTarget.name)
-      : ""
-    confirmText: qsTr("Delete")
-    onConfirmed: {
-      if (root.deleteTarget) root.helper(["delete", root.deleteTarget.id])
-      root.deleteTarget = null
-    }
-    onCanceled: root.deleteTarget = null
-  }
+  // Deleting never kills windows — the helper moves them out first — but
+  // it removes the keybind and rules, so it deserves an explicit confirm.
+  // The app window hosts its own copy (inside its content, centered over
+  // it); the panel hosts one inside its key catcher. Both are driven by
+  // `deleteOpen`, so confirming in either surface closes both.
 
   // ---------------- IPC ----------------
 

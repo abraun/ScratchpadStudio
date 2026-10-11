@@ -191,3 +191,28 @@ class TestKeybindReplacement(FixtureCase):
         self.assertIsNone(self.sst.find_bind_conflict("ALT + SUPER + M", kept))
         hit = self.sst.find_bind_conflict("ALT + SUPER + A", kept)
         self.assertIsNotNone(hit)
+
+
+class TestUniqueId(FixtureCase):
+    """New scratchpads must never share a special workspace: ids are
+    de-duplicated against state AND the reserved built-in (the captain's
+    SUPER+S/SUPER+D confusion came from a scratchpad slugged 'scratchpad'
+    landing on Omarchy's built-in special:scratchpad)."""
+
+    def test_free_id_passes_through(self):
+        self.assertEqual(self.sst.unique_id("music", ["ai", "browsing"]), "music")
+
+    def test_reserved_builtin_is_never_assigned(self):
+        self.assertEqual(self.sst.unique_id("scratchpad", []), "scratchpad-2")
+        self.assertEqual(self.sst.unique_id("Scratchpad", ["ai"]), "scratchpad-2")
+
+    def test_collision_chains_forward(self):
+        taken = ["scratchpad", "scratchpad-2", "scratchpad-3"]
+        self.assertEqual(self.sst.unique_id("scratchpad", taken), "scratchpad-4")
+        self.assertEqual(self.sst.unique_id("music", ["music", "music-2"]), "music-3")
+
+    def test_slug_normalization_applies_first(self):
+        self.assertEqual(self.sst.unique_id("My Music!!", ["my-music"]), "my-music-2")
+
+    def test_empty_candidate_still_avoids_reserved(self):
+        self.assertEqual(self.sst.unique_id("", []), "scratchpad-2")

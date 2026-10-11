@@ -48,6 +48,12 @@ BLOCK_LINES = [BLOCK_BEGIN, 'require("hypr.scratchpad-studio")', BLOCK_END]
 GAP_MIN_PX = 6
 VERSION = "0.2.0"
 
+# Omarchy's built-in scratchpad special (its SUPER+S "Toggle scratchpad"
+# bind targets special:scratchpad). A plugin scratchpad with this id would
+# share that workspace: both chords would toggle the same special and the
+# built-in's windows would leak into ours — reserved, never assigned.
+RESERVED_SPECIALS = ("scratchpad",)
+
 ANCHORS = ("top", "bottom", "left", "right", "center")
 LAYOUTS = ("single", "pair", "stacked", "three-up", "grid")
 # "popin" pairs with the center anchor: the frame has no edge to slide
@@ -192,6 +198,12 @@ def cmd_upsert() -> None:
     sp = normalize_sp(raw)
     state = load_state()
     old = find_sp(state, sp["id"])
+    if old is None:
+        # New scratchpad: never let it share a special workspace with
+        # another entry or the Omarchy built-in (two chords toggling the
+        # same windows). The GUI already assigns free ids; this guards
+        # direct CLI use.
+        sp["id"] = unique_id(sp["id"], [s["id"] for s in state["scratchpads"]])
     gone = removed_classes(old, sp) if old else []
     kept = [s for s in state["scratchpads"] if s["id"] != sp["id"]]
     kept.append(sp)
@@ -312,6 +324,21 @@ def slug(text: str) -> str:
     while "--" in slug_text:
         slug_text = slug_text.replace("--", "-")
     return (slug_text or "scratchpad")[:32]
+
+
+def unique_id(candidate: str, taken) -> str:
+    """First free id for a NEW scratchpad: `music` -> `music-2` -> `music-3`.
+    Reserved names (the Omarchy built-in) and every existing scratchpad id
+    count as taken — two scratchpads must never share a special workspace,
+    or their chords toggle the same windows."""
+    taken = set(taken) | set(RESERVED_SPECIALS)
+    base = slug(candidate)
+    if base not in taken:
+        return base
+    n = 2
+    while f"{base}-{n}" in taken:
+        n += 1
+    return f"{base}-{n}"
 
 
 def clamp(value, lo: int, hi: int) -> int:
@@ -927,6 +954,10 @@ def adopt(sp_id: str, name: str | None) -> None:
     state = load_state()
     if find_sp(state, sp_id):
         die(f"already managed: {sp_id}")
+    if sp_id in RESERVED_SPECIALS:
+        die("special:scratchpad is Omarchy's built-in (SUPER+S); adopting "
+            "would rewrite its rules — create a scratchpad with a "
+            "different name instead")
     live = [str(ws.get("name") or "") for ws in workspaces()]
     if f"special:{sp_id}" not in live:
         die(f"no such special workspace: special:{sp_id}")
