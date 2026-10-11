@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "scratchpad-studio",
+  "name": "Scratchpad Studio",
+  "version": "0.1.0",
+  "author": "Scratchpad Studio contributors",
+  "license": "MIT",
+  "description": "A studio for multiple scratchpads: named, hideable window sets that slide in on a keybind. See every scratchpad with a live schematic of its windows, create new ones from installed apps, pick layouts and slide-in anchors, bind chords with conflict checking, and toggle them all from the bar. Engine is native Hyprland special workspaces — no daemon.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "activation": "on-demand",
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Scratchpad Studio",
+    "description": "Manage and toggle named scratchpads. Left-click opens the studio; right-click opens it as a resizable window.",
+    "category": "Desktop",
+    "aliases": ["scratchpads", "sp-studio"],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "demoMode": false
+    },
+    "schema": [
+      {
+        "key": "demoMode",
+        "type": "enum",
+        "label": "Demo mode",
+        "options": ["Off", "On"],
+        "defaultValue": "Off",
+        "description": "Show fake scratchpads and windows with made-up names. For screenshots and trying the UI; never shows real window titles."
+      }
+    ]
+  }
+}

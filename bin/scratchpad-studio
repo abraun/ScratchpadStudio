@@ -1,0 +1,408 @@
+#!/usr/bin/env python3
+"""scratchpad-studio — engine helper for the Scratchpad Studio Omarchy plugin.
+
+Everything the GUI cannot do from QML lives here: reading Hyprland state,
+computing window geometry, launching apps, toggling special workspaces, and
+(milestone b) generating the managed Hyprland config.
+
+Stdlib only. No network. Never closes or kills the user's windows.
+
+Usage: scratchpad-studio <command> [args]
+  list                 print scratchpads + live status as JSON
+  toggle <id>          show/hide a scratchpad, launching missing apps
+  geometry <id>        print computed window rects (debug)
+  state-path           print the state file path
+  version              print the plugin version
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+HOME = Path(os.environ.get("HOME", str(Path.home())))
+STATE_DIR = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "scratchpad-studio"
+STATE_PATH = STATE_DIR / "scratchpads.json"
+BACKUP_DIR = STATE_DIR / "backups"
+
+GAP_MIN_PX = 6
+VERSION = "0.1.0"
+
+ANCHORS = ("top", "bottom", "left", "right")
+LAYOUTS = ("single", "pair", "stacked", "three-up", "grid")
+TRANSITIONS = ("down", "up", "right", "left")
+
+# Apps known to be single-instance: the launcher process exits immediately
+# and the real window maps later, so PID/process tracking always lies. For
+# these we match by window class only. (Cider gotcha from the brief.)
+SINGLE_INSTANCE_CLASSES = {
+    "cider", "spotube", "youtube-music", "webcord", "discord", "slack",
+    "1password", "bitwarden", "signal", "telegramdesktop", "whatsapp",
+}
+
+
+def die(message: str, code: int = 1) -> None:
+    print(f"scratchpad-studio: {message}", file=sys.stderr)
+    sys.exit(code)
+
+
+# ---------------------------------------------------------------- hyprctl
+
+def hyprctl(args: list[str], check: bool = True) -> str:
+    result = subprocess.run(
+        ["hyprctl"] + args, capture_output=True, text=True, timeout=10
+    )
+    if check and result.returncode != 0:
+        die(f"hyprctl {' '.join(args)} failed: {result.stderr.strip()}")
+    return result.stdout
+
+
+def hyprctl_json(args: list[str]):
+    return json.loads(hyprctl(args))
+
+
+def eval_lua(code: str) -> None:
+    """Run a Lua snippet in Hyprland. Dies with the compositor's error."""
+    result = subprocess.run(
+        ["hyprctl", "eval", code], capture_output=True, text=True, timeout=10
+    )
+    if result.returncode != 0:
+        die(f"hyprctl eval failed: {result.stderr.strip()}")
+
+
+def lua_quote(text: str) -> str:
+    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+# ---------------------------------------------------------------- state
+
+def default_state() -> dict:
+    return {"version": 1, "scratchpads": []}
+
+
+def normalize_app(app: dict) -> dict:
+    return {
+        "name": str(app.get("name") or "App"),
+        "command": str(app.get("command") or ""),
+        "class": str(app.get("class") or ""),
+        "webapp": bool(app.get("webapp")),
+        "singleInstance": bool(app.get("singleInstance")),
+    }
+
+
+def normalize_sp(sp: dict) -> dict:
+    size = sp.get("sizePct") or {}
+    anchor = sp.get("anchor") if sp.get("anchor") in ANCHORS else "top"
+    return {
+        "id": slug(sp.get("id") or sp.get("name") or "scratchpad"),
+        "name": str(sp.get("name") or "Scratchpad"),
+        "icon": str(sp.get("icon") or ""),
+        "keybind": str(sp.get("keybind") or ""),
+        "anchor": anchor,
+        "layout": sp.get("layout") if sp.get("layout") in LAYOUTS else "single",
+        "transition": sp.get("transition") if sp.get("transition") in TRANSITIONS else "down",
+        "sizePct": {
+            "w": clamp(sp.get("w", 60), 30, 95),
+            "h": clamp(sp.get("h", 50), 25, 95),
+        },
+        "marginPx": int(clamp(sp.get("marginPx", 12), 0, 128)),
+        "apps": [normalize_app(a) for a in (sp.get("apps") or [])],
+    }
+
+
+def normalize_state(raw) -> dict:
+    state = default_state()
+    if isinstance(raw, dict):
+        if isinstance(raw.get("version"), int):
+            state["version"] = raw["version"]
+        if isinstance(raw.get("scratchpads"), list):
+            state["scratchpads"] = [normalize_sp(sp) for sp in raw["scratchpads"]]
+    return state
+
+
+def slug(text: str) -> str:
+    out = []
+    for ch in text.lower():
+        out.append(ch if ch.isalnum() else "-")
+    slug_text = "".join(out).strip("-")
+    while "--" in slug_text:
+        slug_text = slug_text.replace("--", "-")
+    return (slug_text or "scratchpad")[:32]
+
+
+def clamp(value, lo: int, hi: int) -> int:
+    try:
+        number = int(round(float(value)))
+    except (TypeError, ValueError):
+        number = lo
+    return max(lo, min(hi, number))
+
+
+def load_state() -> dict:
+    try:
+        raw = json.loads(STATE_PATH.read_text())
+    except FileNotFoundError:
+        return default_state()
+    except json.JSONDecodeError as error:
+        die(f"state file is not valid JSON ({STATE_PATH}: {error})")
+    return normalize_state(raw)
+
+
+def save_state(state: dict) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = STATE_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, indent=2) + "\n")
+    os.replace(tmp, STATE_PATH)
+
+
+def find_sp(state: dict, sp_id: str) -> dict | None:
+    for sp in state["scratchpads"]:
+        if sp["id"] == sp_id:
+            return sp
+    return None
+
+
+# ---------------------------------------------------------------- live state
+
+def monitors() -> list:
+    return hyprctl_json(["-j", "monitors"])
+
+
+def focused_monitor() -> dict:
+    for monitor in monitors():
+        if monitor.get("focused"):
+            return monitor
+    monitors_list = monitors()
+    return monitors_list[0] if monitors_list else die("no monitors")
+
+
+def usable_area(monitor: dict) -> tuple[int, int]:
+    # hyprctl reports physical pixels + scale; window coordinates are logical.
+    scale = float(monitor.get("scale") or 1) or 1
+    return int(monitor["width"] / scale), int(monitor["height"] / scale)
+
+
+def clients() -> list:
+    return hyprctl_json(["-j", "clients"])
+
+
+def workspaces() -> list:
+    return hyprctl_json(["-j", "workspaces"])
+
+
+def special_is_shown(sp_id: str) -> bool:
+    name = f"special:{sp_id}"
+    for ws in workspaces():
+        if ws.get("name") == name:
+            return bool(ws.get("active"))
+    return False
+
+
+def window_classes() -> set[str]:
+    return {str(c.get("class") or "") for c in clients() if c.get("mapped", True)}
+
+
+# ---------------------------------------------------------------- geometry
+
+def base_rect(sp: dict, usable: tuple[int, int]) -> tuple[int, int, int, int]:
+    """Anchor rect for the whole scratchpad: (x, y, w, h) in logical px."""
+    width, height = usable
+    w = max(200, int(width * sp["sizePct"]["w"] / 100))
+    h = max(140, int(height * sp["sizePct"]["h"] / 100))
+    margin = sp["marginPx"]
+    anchor = sp["anchor"]
+    if anchor == "top":
+        x, y = (width - w) // 2, margin
+    elif anchor == "bottom":
+        x, y = (width - w) // 2, height - margin - h
+    elif anchor == "left":
+        x, y = margin, (height - h) // 2
+    else:  # right
+        x, y = width - margin - w, (height - h) // 2
+    return x, y, w, h
+
+
+def layout_rects(sp: dict, usable: tuple[int, int]) -> list[tuple[int, int, int, int]]:
+    """Per-app rects for the scratchpad's layout. Mirrored in lib/Layout.js;
+    python is the source of truth (tests/ cover this copy)."""
+    x, y, w, h = base_rect(sp, usable)
+    count = max(1, len(sp["apps"]))
+    gap = max(GAP_MIN_PX, sp["marginPx"] // 2)
+    layout = sp["layout"]
+
+    if layout == "stacked" or count == 1:
+        return [(x, y, w, h)] * count
+
+    if layout == "single":
+        # Extra apps overlay the first; toggling focus swaps them.
+        return [(x, y, w, h)] * count
+
+    if layout == "pair":
+        if count == 2:
+            half = (w - gap) // 2
+            return [(x, y, half, h), (x + half + gap, y, w - half - gap, h)]
+        columns = 2
+    elif layout == "three-up":
+        columns = 3
+    else:  # grid
+        columns = 2
+
+    rows = -(-count // columns)  # ceil
+    cell_w = (w - gap * (columns - 1)) // columns
+    cell_h = (h - gap * (rows - 1)) // rows
+    rects = []
+    for index in range(count):
+        col = index % columns
+        row = index // columns
+        rects.append((
+            x + col * (cell_w + gap),
+            y + row * (cell_h + gap),
+            cell_w,
+            cell_h,
+        ))
+    return rects
+
+
+# ---------------------------------------------------------------- engine
+
+def runtime_rules(sp: dict, monitor: dict) -> list[str]:
+    """Lua hl.window_rule() snippets routing each app class into the hidden
+    special workspace with its computed geometry. Runtime rules vanish on
+    reload; milestone b persists the same rules via generated config."""
+    usable = usable_area(monitor)
+    rects = layout_rects(sp, usable)
+    monitor_name = monitor.get("name", "")
+    snippets = []
+    for app, rect in zip(sp["apps"], rects):
+        if not app["class"]:
+            continue
+        match = f'class = "{app["class"]}"'
+        body = (
+            f'workspace = "special:{sp["id"]} silent"'
+            f', float = true, size = "{rect[2]} {rect[3]}"'
+            f', move = "{rect[0]} {rect[1]}"'
+        )
+        if monitor_name:
+            body += f', monitor = "{monitor_name}"'
+        snippets.append(f"hl.window_rule({{ match = {{ {match} }}, {body} }})")
+    return snippets
+
+
+def transition_rule(sp: dict) -> str | None:
+    """Per-window animation style so the reveal matches the chosen direction.
+    The specialWorkspace slide itself is global (Omarchy sets slidevert);
+    the window animation is what we can steer per scratchpad."""
+    style = {
+        "down": "slide", "up": "slide", "right": "slide", "left": "slide"
+    }.get(sp["transition"])
+    if not style:
+        return None
+    classes = [a["class"] for a in sp["apps"] if a["class"]]
+    if not classes:
+        return None
+    match = "class = " + " or ".join(lua_quote(c) for c in classes)
+    return f"hl.window_rule({{ match = {{ {match} }}, animation = {lua_quote(style)} }})"
+
+
+def launch_missing(sp: dict) -> None:
+    have = window_classes()
+    for app in sp["apps"]:
+        if not app["command"]:
+            continue
+        if app["class"] and app["class"] in have:
+            continue  # already running somewhere; the workspace holds it
+        command = app["command"]
+        if shutil.which("uwsm-app"):
+            argv = ["uwsm-app", "--", "sh", "-c", command]
+        else:
+            argv = ["sh", "-c", command]
+        subprocess.Popen(
+            argv,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+
+def toggle(sp_id: str) -> None:
+    state = load_state()
+    sp = find_sp(state, sp_id)
+    if sp is None:
+        die(f"unknown scratchpad: {sp_id}")
+    if special_is_shown(sp_id):
+        eval_lua(f'return hl.dsp.workspace.toggle_special({lua_quote(sp_id)})')
+        return
+    monitor = focused_monitor()
+    for snippet in runtime_rules(sp, monitor):
+        eval_lua(snippet)
+    rule = transition_rule(sp)
+    if rule:
+        eval_lua(rule)
+    launch_missing(sp)
+    eval_lua(f'return hl.dsp.workspace.toggle_special({lua_quote(sp_id)})')
+
+
+# ---------------------------------------------------------------- commands
+
+def cmd_list() -> None:
+    state = load_state()
+    shown = set()
+    for ws in workspaces():
+        name = str(ws.get("name") or "")
+        if name.startswith("special:") and ws.get("active"):
+            shown.add(name[len("special:"):])
+    classes = window_classes()
+    out = []
+    for sp in state["scratchpads"]:
+        windows = [
+            {"class": str(c.get("class") or ""), "title": str(c.get("title") or "")}
+            for c in clients()
+            if c.get("workspace", {}).get("name") == f"special:{sp['id']}"
+        ]
+        out.append({
+            **sp,
+            "status": "shown" if sp["id"] in shown else ("running" if windows else "idle"),
+            "windows": windows,
+        })
+    print(json.dumps({"version": state["version"], "scratchpads": out}, indent=2))
+
+
+def cmd_geometry(sp_id: str) -> None:
+    state = load_state()
+    sp = find_sp(state, sp_id)
+    if sp is None:
+        die(f"unknown scratchpad: {sp_id}")
+    monitor = focused_monitor()
+    print(json.dumps({
+        "monitor": monitor.get("name"),
+        "usable": usable_area(monitor),
+        "rects": layout_rects(sp, usable_area(monitor)),
+    }, indent=2))
+
+
+def main(argv: list[str]) -> None:
+    if len(argv) < 2:
+        print(__doc__)
+        sys.exit(2)
+    command = argv[1]
+    if command == "list":
+        cmd_list()
+    elif command == "toggle" and len(argv) == 3:
+        toggle(argv[2])
+    elif command == "geometry" and len(argv) == 3:
+        cmd_geometry(argv[2])
+    elif command == "state-path":
+        print(STATE_PATH)
+    elif command == "version":
+        print(VERSION)
+    else:
+        print(__doc__)
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main(sys.argv)
