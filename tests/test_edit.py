@@ -237,3 +237,26 @@ class TestChordOwners(FixtureCase):
 
     def test_empty_chord_has_no_owners(self):
         self.assertEqual(self.owners(""), [])
+
+
+class TestManagedBindFiltering(FixtureCase):
+    """The live-bind conflict check must skip every managed bind, even when
+    the scratchpad being edited has been renamed (its own bind still
+    carries the old description and Hyprland reports our args as numbers,
+    so nothing else identifies it)."""
+
+    def test_renamed_scratchpads_stale_bind_is_not_a_conflict(self):
+        # the scratchpad was renamed "Music" -> "Focus"; its live bind still
+        # says "Scratchpad: Music" until the next apply
+        stale_own = {"modmask": 72, "key": "M",
+                     "description": "Scratchpad: Music", "arg": "92"}
+        kept = self.sst.filter_managed_binds([stale_own])
+        self.assertEqual(kept, [])
+        self.assertIsNone(self.sst.find_bind_conflict("ALT + SUPER + M", kept))
+
+    def test_foreign_binds_survive_the_filter(self):
+        omarchy = {"modmask": 64, "key": "S",
+                   "description": "Toggle scratchpad", "arg": "131"}
+        kept = self.sst.filter_managed_binds([omarchy])
+        self.assertEqual(len(kept), 1)
+        self.assertIsNotNone(self.sst.find_bind_conflict("SUPER + S", kept))

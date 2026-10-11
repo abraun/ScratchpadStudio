@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Layouts
 import Quickshell
 import qs.Commons
 import qs.Ui
@@ -50,6 +51,7 @@ Item {
     anchors.fill: parent
     hoverEnabled: true
     acceptedButtons: Qt.LeftButton
+    cursorShape: Qt.PointingHandCursor
     onClicked: root.toggleRequested()
   }
 
@@ -168,7 +170,11 @@ Item {
   }
 
   // ---- actions ----
-  Row {
+  // RowLayout, not Row: hidden buttons (Copy/Delete on the built-in card)
+  // must not donate their width to the arithmetic — the Show button used
+  // to shrink by widths that were not on screen and clip its own label,
+  // leaving hover/click area that matched nothing visible.
+  RowLayout {
     id: actions
     anchors.bottom: parent.bottom
     anchors.left: parent.left
@@ -177,15 +183,16 @@ Item {
     spacing: Style.space(6)
 
     Button {
+      Layout.fillWidth: true
       text: root.card.status === "shown" ? qsTr("Hide") : qsTr("Show")
       height: Style.space(28)
-      width: parent.width - editBtn.width - copyBtn.width - deleteBtn.width - parent.spacing * 3
       fontSize: Style.font.bodySmall
       iconText: root.card.status === "shown" ? "󰈈" : "󰈄"
       onClicked: root.toggleRequested()
     }
     Button {
       id: editBtn
+      Layout.alignment: Qt.AlignVCenter
       visible: root.card.editable || root.card.adoptable
       text: root.card.adoptable ? qsTr("Adopt") : qsTr("Edit")
       height: Style.space(28)
@@ -195,6 +202,7 @@ Item {
     }
     Button {
       id: copyBtn
+      Layout.alignment: Qt.AlignVCenter
       visible: root.card.editable
       text: qsTr("Copy")
       tooltipText: qsTr("Duplicate this scratchpad")
@@ -205,6 +213,7 @@ Item {
     }
     Button {
       id: deleteBtn
+      Layout.alignment: Qt.AlignVCenter
       visible: root.card.origin !== "builtin"
       text: qsTr("Delete")
       height: Style.space(28)

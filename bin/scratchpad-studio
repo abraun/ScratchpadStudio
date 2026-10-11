@@ -1138,17 +1138,37 @@ def filter_self_binds(binds: list, sp_id: str, sp_name: str) -> list:
     return [b for b in binds if not self_bind_match(b, sp_id, sp_name)]
 
 
+def managed_bind_descriptions(state: dict) -> set[str]:
+    """Descriptions our generated o.bind lines carry right now."""
+    return {f"Scratchpad: {s['name']}" for s in state["scratchpads"]}
+
+
+MANAGED_BIND_PREFIX = "Scratchpad: "
+
+
+def filter_managed_binds(binds: list) -> list:
+    """Drop every bind our generated config owns: this plugin's binds always
+    describe themselves with the managed prefix. State ownership
+    (scratchpad_chord_owners) decides scratchpad-vs-scratchpad conflicts;
+    this only removes our own binds from the live check — including a
+    renamed scratchpad's bind, which still carries its old name until the
+    next apply (and Hyprland reports our args as numbers, so nothing else
+    identifies it)."""
+    return [b for b in binds
+            if not str(b.get("description") or "").startswith(MANAGED_BIND_PREFIX)]
+
+
 def cmd_conflicts(chord: str, as_json: bool = False, self_id: str | None = None) -> None:
     import glob
     binds = hyprctl_json(["-j", "binds"])
     state = load_state()
-    # Editing a scratchpad must not flag its own current chord: the old
-    # o.bind line is replaced wholesale on save (the generated file is
-    # rewritten from state), so keeping the same chord is not a conflict.
-    if self_id:
-        me = find_sp(state, self_id)
-        if me:
-            binds = filter_self_binds(binds, me["id"], me["name"])
+    # Scratchpad chords are decided from state (always current): another
+    # scratchpad holding this chord is reported via scratchpadOwners, the
+    # scratchpad being edited never conflicts with itself. Every managed
+    # bind is dropped from the live list — matching own binds by
+    # description failed for renamed scratchpads (the bind still carried
+    # the old name), and Hyprland reports our binds' arg as a number.
+    binds = filter_managed_binds(binds)
     live = find_bind_conflict(chord, binds)
     # Scratchpads already holding this chord — from state, which is always
     # current (live binds can be stale in a long-running shell).

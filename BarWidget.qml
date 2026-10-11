@@ -464,6 +464,10 @@ Panel {
     function close(): void { root.close() }
     function toggle(): void { root.toggle() }
     function window(): string { root.openWindow(); return "ok" }
+    // Graceful hide (the Esc path): lets Quickshell unmap and reuse the
+    // window. Killing the surface from the compositor side leaves the
+    // FloatingWindow unable to remap until the widget is recreated.
+    function hideWindow(): void { studioWindow.visible = false }
     function startWizard(): void { root.open(); Qt.callLater(root.newScratchpad) }
     function wizardStep(n: int): void { wizard.step = n; wizard.forceActiveFocus() }
     // Open the visual editor for one scratchpad (works in demo mode too).
