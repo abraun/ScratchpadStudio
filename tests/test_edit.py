@@ -216,3 +216,24 @@ class TestUniqueId(FixtureCase):
 
     def test_empty_candidate_still_avoids_reserved(self):
         self.assertEqual(self.sst.unique_id("", []), "scratchpad-2")
+
+
+class TestChordOwners(FixtureCase):
+    """Conflict detection by state: another scratchpad's chord is a hard
+    conflict; the scratchpad being edited never conflicts with itself."""
+
+    def owners(self, chord, exclude=None):
+        return self.sst.scratchpad_chord_owners(
+            state(sp(keybind="ALT + SUPER + M"),
+                  sp(id="ai", name="AI", keybind="ALT + SUPER + A")),
+            chord, exclude)
+
+    def test_other_scratchpad_chord_is_reported(self):
+        self.assertEqual(self.owners("ALT + SUPER + A"),
+                         [{"id": "ai", "name": "AI"}])
+
+    def test_own_chord_is_excluded(self):
+        self.assertEqual(self.owners("ALT + SUPER + M", exclude="music"), [])
+
+    def test_empty_chord_has_no_owners(self):
+        self.assertEqual(self.owners(""), [])

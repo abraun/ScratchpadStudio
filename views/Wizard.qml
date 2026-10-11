@@ -125,13 +125,21 @@ Item {
     Quickshell.execDetached(["bash", "-c", command + " 2>&1"])
   }
 
+  // The last step's Save/Create must wait for a free chord — a taken one
+  // would either shadow an existing bind or make one chord toggle two
+  // scratchpads. Surfaced as a disabled button plus a hint (the captain
+  // asked for a hard block, not an overridable warning).
+  readonly property bool keybindBlocked:
+    step === root.steps.length - 1 && keybindStepItem.blockingConflict
+
   function finish() {
+    if (keybindBlocked) return
     if (!demo) runHelper("upsert", JSON.stringify(draft))
     finished(draft)
   }
 
   function testNow() {
-    if (demo) return
+    if (demo || keybindBlocked) return
     runHelper("upsert", JSON.stringify(draft))
     Qt.callLater(function() {
       // Never fall back to "scratchpad" — that is Omarchy's built-in
@@ -235,6 +243,17 @@ Item {
     }
 
     // footer nav
+    Text {
+      Layout.fillWidth: true
+      visible: root.keybindBlocked
+      wrapMode: Text.Wrap
+      text: qsTr("That keybind is already taken — go back to the keybind step and pick a free chord to save.")
+      color: Color.urgent
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      renderType: Text.NativeRendering
+    }
+
     Row {
       Layout.fillWidth: true
       spacing: Style.space(8)
@@ -246,7 +265,7 @@ Item {
           : qsTr("Next")
         iconText: root.step === root.steps.length - 1 ? "󰸞" : "󰁔"
         fontSize: Style.font.body
-        enabled: root.canAdvance()
+        enabled: root.canAdvance() && !root.keybindBlocked
         onClicked: root.advance()
       }
 

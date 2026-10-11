@@ -71,9 +71,14 @@ changes and regenerates automatically. Documented in the README.
 - **Keybind replacement**: binds live only in the generated file, which
   is fully rewritten from state on every apply — a changed chord
   replaces the old `o.bind` line and the reload drops the old bind. No
-  orphans. `conflicts-json --self <id>` filters the scratchpad's own
-  live bind, so re-capturing the same chord while editing is not a
-  self-conflict; another scratchpad's chord is a loud warning.
+  orphans. `conflicts-json --self <id>` filters that scratchpad's own
+  live bind, and conflict detection runs against **state** first (live
+  binds can be stale in a long-running shell); the generated file is
+  excluded from the config scan — pressing a scratchpad's own chord used
+  to flag a phantom "used in your config" conflict. A chord held by
+  another scratchpad, an Omarchy default, or the user's own config is a
+  **hard block**: the Save/Test buttons disable and the helper's upsert
+  refuses the write (`--allow-conflicts` for scripted migrations).
 - **Toggle flow** (`bin/scratchpad-studio toggle <id>`):
   if the special workspace is currently visible → hide it; else launch any
   configured apps whose window class is absent from `hyprctl -j clients`
@@ -217,7 +222,13 @@ Installed footprint (all created by `omarchy plugin add` + first run):
   chip or Ctrl+K, hold modifiers in any order (they build up live),
   press the final key to complete the chord, Esc cancels — the
   scratchpad's own chord is excluded from conflict detection while
-  editing. Anchor (incl. center), slide-in (incl. pop-in), placement and
+  editing, and a taken chord blocks saving until resolved. Dragging a
+  card onto another's **edge** slides it in beside the target and opens
+  an overlay layout (single/stacked) into real columns — drag Ghostty
+  onto Chromium's right edge and Chromium keeps the whole left; the
+  middle swaps. The size numbers under the canvas are a control: click
+  them for width/height/margin sliders (the corner handle still drags).
+  Anchor (incl. center), slide-in (incl. pop-in), placement and
   name/icon round it out; Ctrl+Enter saves through `upsert`
   (regenerate → relocate → reflow), Esc cancels — restoring the pre-test
   state if "Test it now" ran. "Test it now" serializes upsert before

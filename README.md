@@ -20,15 +20,19 @@ Browsing, AI, music — one chord each.
   workspaces you already had show up too and can be adopted.
 - **Visual layout editor** — click Edit on any scratchpad and get its
   windows drawn in their saved arrangement on a monitor-true canvas.
-  Drag a card onto another slot to rearrange (or Ctrl+←/→ with the
-  keyboard), Del removes an app, **Add app** reuses the wizard's picker
-  (installed apps, running windows, custom command/URL), and the keybind
-  is an editable control — click the chip or Ctrl+K, hold modifiers in
-  any order (they build up live), press the final key, done. Saving swaps
-  the old `o.bind()` line for the new one wholesale (no orphan binds) and
-  reflows already-open windows onto their new slots, live. Windows can be
-  arranged in slots or set to float freely, anchored to any edge or the
-  center (a centered scratchpad pops in).
+  Drag a card onto another's **edge** to split (drag a window to the
+  right and the other fills the left), onto the middle to swap
+  (Ctrl+←/→ works too), Del removes an app, **Add app** reuses the
+  wizard's picker (installed apps, running windows, custom command/URL).
+  Click the size numbers for width/height/margin sliders, or drag the
+  frame's corner handle. The keybind is an editable control — click the
+  chip or Ctrl+K, hold modifiers in any order (they build up live),
+  press the final key, done; a chord that's already taken blocks saving
+  until you pick a free one. Saving swaps the old `o.bind()` line for
+  the new one wholesale (no orphan binds) and reflows already-open
+  windows onto their new slots, live. Windows can be arranged in slots
+  or set to float freely, anchored to any edge or the center (a
+  centered scratchpad pops in).
 - **Six-step wizard** — name & icon; apps picked from installed apps,
   currently-running windows, or a custom command/URL (web apps open as
   `chromium --app` windows with the right class); window placement

@@ -32,6 +32,10 @@ Item {
     capture.forceCapture()
   }
 
+  // True when the draft's chord is taken (another scratchpad, an Omarchy
+  // default, the user's own config) — the host must refuse to save.
+  readonly property alias blockingConflict: capture.blockingConflict
+
   KeybindCapture {
     id: capture
     anchors.fill: parent

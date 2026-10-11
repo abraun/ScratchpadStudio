@@ -43,6 +43,11 @@ Item {
   property string conflictText: ""
   property bool conflictIsOmarchy: false
   property bool conflictIsOtherScratchpad: false
+  // A conflict means the chord is taken — by another scratchpad, an
+  // Omarchy default, or the user's own config — and the host must refuse
+  // to save until it is resolved (the captain asked for a hard block, not
+  // a warning that can be overwritten).
+  readonly property bool blockingConflict: conflictText !== ""
   property var suggestionRows: []
   property var binds: []
 
@@ -70,6 +75,9 @@ Item {
     heldMods = []
     captureHint = ""
     conflictText = ""
+    // Re-read the live binds: the list from shell startup goes stale as
+    // soon as a new scratchpad (or any o.bind) is written this session.
+    bindsProc.running = true
     forceActiveFocus()
   }
 
@@ -178,20 +186,28 @@ Item {
       onStreamFinished: {
         try {
           var result = JSON.parse(text)
-          if (result.liveBind) {
+          // State is the authority for scratchpad chords — live binds can
+          // be stale in a long-running shell, which once made this
+          // scratchpad's own chord report a phantom conflict.
+          if (result.scratchpadOwners && result.scratchpadOwners.length > 0) {
+            conflictIsOtherScratchpad = true
+            conflictIsOmarchy = false
+            var names = result.scratchpadOwners.map(function(o) { return o.name })
+            conflictText = qsTr("Already used by another scratchpad (%1) — pick another chord; saving stays blocked until it is free.").arg(names.join(", "))
+          } else if (result.liveBind) {
             var desc = String(result.liveBind.description || "")
             conflictIsOtherScratchpad = desc.indexOf("Scratchpad: ") === 0
               || String(result.liveBind.arg || "").indexOf(" toggle ") >= 0
             conflictIsOmarchy = !conflictIsOtherScratchpad
             conflictText = conflictIsOtherScratchpad
-              ? qsTr("Already used by another scratchpad (%1). Saving would make one chord toggle two scratchpads — pick another.").arg(desc.replace("Scratchpad: ", ""))
+              ? qsTr("Already used by another scratchpad (%1) — pick another chord; saving stays blocked until it is free.").arg(desc.replace("Scratchpad: ", ""))
               : desc !== ""
-                ? qsTr("Bound to “%1” — an Omarchy default or another plugin. Pick another chord.").arg(desc)
-                : qsTr("Already bound to another action.")
+                ? qsTr("Bound to “%1” — an Omarchy default or another plugin. Pick another chord; saving stays blocked.").arg(desc)
+                : qsTr("Already bound to another action — pick another chord; saving stays blocked.")
           } else if (result.configLines && result.configLines.length > 0) {
             conflictIsOmarchy = false
             conflictIsOtherScratchpad = false
-            conflictText = qsTr("Used in your config (%1).").arg(result.configLines[0][1])
+            conflictText = qsTr("Used in your config (%1) — pick another chord; saving stays blocked.").arg(result.configLines[0][1])
           } else {
             conflictIsOmarchy = false
             conflictIsOtherScratchpad = false
@@ -271,9 +287,8 @@ Item {
     if (modifiers & Qt.AltModifier) mods.push("ALT")
     if (modifiers & Qt.MetaModifier) mods.push("SUPER")
     if (mods.length === 0) {
-      conflictText = qsTr("Add a modifier — bare keys type into apps.")
-      conflictIsOmarchy = false
-      conflictIsOtherScratchpad = false
+      // A capture hint, not a chord conflict — conflictText blocks saving.
+      captureHint = qsTr("Add a modifier — bare keys type into apps.")
       return true
     }
     var chord = mods.join(" + ") + " + " + name

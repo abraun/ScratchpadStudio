@@ -22,7 +22,11 @@ FloatingWindow {
   color: Color.background
   implicitWidth: 1040
   implicitHeight: 720
-  minimumSize: Qt.size(720, 480)
+  // The editor's boxes have fixed minimums (apps list + arrangement +
+  // keybind + spacing); below ~610px of window height the footer's
+  // Cancel/Test/Save row gets pushed past the bottom edge and vanishes —
+  // the captain hit exactly that after making the window shorter.
+  minimumSize: Qt.size(740, 620)
   visible: false
 
   // The editor draft of THIS surface, for the widget's IPC inspection

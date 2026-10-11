@@ -183,7 +183,7 @@ def cmd_apps() -> None:
     print(json.dumps(app_catalogue(), indent=2))
 
 
-def cmd_upsert() -> None:
+def cmd_upsert(argv: list[str]) -> None:
     """Merge one scratchpad (JSON on stdin) into state, save, apply.
 
     Editing is this command: apps that were removed get their live windows
@@ -204,6 +204,14 @@ def cmd_upsert() -> None:
         # same windows). The GUI already assigns free ids; this guards
         # direct CLI use.
         sp["id"] = unique_id(sp["id"], [s["id"] for s in state["scratchpads"]])
+    # Same for chords: two scratchpads on one chord means one bind toggles
+    # two scratchpads. The GUI blocks this before saving; the guard here
+    # covers direct CLI use (--allow-conflicts for scripted migrations).
+    if sp["keybind"] and "--allow-conflicts" not in argv:
+        owners = scratchpad_chord_owners(state, sp["keybind"], sp["id"])
+        if owners:
+            die(f"chord {sp['keybind']} already belongs to scratchpad "
+                f"'{owners[0]['name']}' — pick another (or pass --allow-conflicts)")
     gone = removed_classes(old, sp) if old else []
     kept = [s for s in state["scratchpads"] if s["id"] != sp["id"]]
     kept.append(sp)
@@ -842,6 +850,20 @@ def removed_classes(old_sp: dict, new_sp: dict) -> list[str]:
     return out
 
 
+def scratchpad_chord_owners(state: dict, chord: str, exclude_id: str | None) -> list[dict]:
+    """Scratchpads (other than the one being edited) already holding this
+    exact chord. State is authoritative here, not the live-bind list: a
+    long-running shell caches binds from startup, so a freshly created
+    scratchpad's chord would look free until the next restart."""
+    if not chord:
+        return []
+    return [
+        {"id": s["id"], "name": s["name"]}
+        for s in state["scratchpads"]
+        if s["id"] != exclude_id and s["keybind"] and s["keybind"] == chord
+    ]
+
+
 # Pixel dispatch, verified live on Hyprland 0.56.2 (Lua config) with a
 # disposable foot window parked on a hidden special:
 #   hl.dsp.window.move({ window = ..., x = N, y = N })   absolute px move
@@ -1094,24 +1116,33 @@ def filter_self_binds(binds: list, sp_id: str, sp_name: str) -> list:
 def cmd_conflicts(chord: str, as_json: bool = False, self_id: str | None = None) -> None:
     import glob
     binds = hyprctl_json(["-j", "binds"])
+    state = load_state()
     # Editing a scratchpad must not flag its own current chord: the old
     # o.bind line is replaced wholesale on save (the generated file is
     # rewritten from state), so keeping the same chord is not a conflict.
     if self_id:
-        state = load_state()
         me = find_sp(state, self_id)
         if me:
             binds = filter_self_binds(binds, me["id"], me["name"])
     live = find_bind_conflict(chord, binds)
+    # Scratchpads already holding this chord — from state, which is always
+    # current (live binds can be stale in a long-running shell).
+    owners = scratchpad_chord_owners(state, chord, self_id)
     files = {}
     for pattern in ("bindings*.lua", "*.lua"):
         for path in sorted(set(glob.glob(str(HYPR_DIR / pattern)))):
+            # Our own generated file holds every scratchpad's current o.bind
+            # by definition — counting it made pressing a scratchpad's own
+            # chord report a phantom "used in your config" conflict.
+            if Path(path).name == GENERATED_LUA.name:
+                continue
             files[Path(path).name] = Path(path).read_text()
     config_hits = [hit for hit in scan_config_chords(files) if hit[0] == chord]
     payload = {
         "chord": chord,
         "valid": chord_modmask(chord) is not None,
         "liveBind": live,
+        "scratchpadOwners": owners,
         "configLines": config_hits,
     }
     if as_json:
@@ -1217,7 +1248,7 @@ def main(argv: list[str]) -> None:
     elif command == "apps":
         cmd_apps()
     elif command == "upsert":
-        cmd_upsert()
+        cmd_upsert(argv)
     elif command == "state-path":
         print(STATE_PATH)
     elif command == "version":

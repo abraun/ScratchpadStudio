@@ -42,6 +42,7 @@ Item {
   property int selectedSlot: 0
   property bool addingApp: false
   property bool tested: false
+  property bool sizeOpen: false
   readonly property bool slots: draft && draft.placement !== "floating"
   readonly property int appCount: draft ? draft.apps.length : 0
 
@@ -89,6 +90,77 @@ Item {
     apps[b] = tmp
     selectedSlot = b
     touch()
+  }
+
+  // Insert semantics: the dragged card slides in at `to`, the rest shift.
+  // No touch() — splitDrop batches this with a layout switch.
+  function reorderApp(from, to) {
+    if (!draft || from === to) return
+    if (from < 0 || to < 0 || from >= draft.apps.length || to >= draft.apps.length) return
+    var moved = draft.apps.splice(from, 1)[0]
+    draft.apps.splice(to, 0, moved)
+    selectedSlot = to
+  }
+
+  // Dropping on a card's EDGE means "make room": the dragged card lands
+  // beside the target (before/after), and an overlay layout (single/
+  // stacked — every window on the same rect) opens up into real columns
+  // so the drop visibly splits the frame. Drag Ghostty onto Chromium's
+  // right edge and Chromium keeps the whole left half.
+  function splitDrop(from, target, after) {
+    if (!draft || from === target) return
+    var to = from < target ? (after ? target : target - 1)
+                           : (after ? target + 1 : target)
+    reorderApp(from, to)
+    if (draft.layout === "single" || draft.layout === "stacked") {
+      var n = draft.apps.length
+      draft.layout = n >= 4 ? "grid" : (n === 3 ? "three-up" : "pair")
+    }
+    touch()
+  }
+
+  // Drop-zone state while dragging: which card half is receiving.
+  property int dropTarget: -1
+  property string dropZone: ""
+
+  function zoneForPoint(box, p) {
+    var horizontal = box[2] >= box[3]
+    var rel = horizontal ? (p.x - box[0]) / box[2] : (p.y - box[1]) / box[3]
+    if (rel < 0.4) return "before"
+    if (rel > 0.6) return "after"
+    return "mid"
+  }
+
+  function updateDropZone(p, dragIndex) {
+    var boxes = canvas.slotBoxesPx()
+    dropTarget = -1
+    dropZone = ""
+    for (var i = 0; i < boxes.length; i++) {
+      if (i === dragIndex) continue
+      var b = boxes[i]
+      if (p.x >= b[0] && p.x <= b[0] + b[2] && p.y >= b[1] && p.y <= b[1] + b[3]) {
+        dropTarget = i
+        dropZone = zoneForPoint(b, p)
+        if (dropZone === "mid") {
+          dropHighlight.x = b[0]; dropHighlight.y = b[1]
+          dropHighlight.width = b[2]; dropHighlight.height = b[3]
+        } else if (b[2] >= b[3]) {
+          dropHighlight.y = b[1]; dropHighlight.height = b[3]
+          dropHighlight.x = dropZone === "before" ? b[0] : b[0] + b[2] * 0.6
+          dropHighlight.width = b[2] * 0.4
+        } else {
+          dropHighlight.x = b[0]; dropHighlight.width = b[2]
+          dropHighlight.y = dropZone === "before" ? b[1] : b[1] + b[3] * 0.6
+          dropHighlight.height = b[3] * 0.4
+        }
+        break
+      }
+    }
+  }
+
+  function clearDropZone() {
+    dropTarget = -1
+    dropZone = ""
   }
 
   function moveApp(from, delta) {
@@ -153,12 +225,16 @@ Item {
   }
 
   function save() {
+    // Hard block: a taken chord would shadow an existing bind or make one
+    // chord toggle two scratchpads. The disabled buttons are the primary
+    // signal; these guards cover the keyboard paths (Ctrl+Enter).
+    if (keybindCapture.blockingConflict) return
     if (!demo) runHelper("upsert", JSON.stringify(draft))
     saved(draft)
   }
 
   function testNow() {
-    if (demo) return
+    if (demo || keybindCapture.blockingConflict) return
     // Serialized on purpose: upsert (regenerate → reload → relocate →
     // reflow) must finish BEFORE the toggle reveals the scratchpad —
     // the old fire-and-forget pair raced the reload and the captain saw
@@ -396,18 +472,28 @@ Item {
                   canvas.forceActiveFocus()
                 }
                 onPositionChanged: {
-                  if (drag.active) wasDragged = true
+                  if (drag.active) {
+                    wasDragged = true
+                    root.updateDropZone(mapToItem(canvas, mouse.x, mouse.y), card.index)
+                  }
                 }
                 onReleased: {
+                  root.clearDropZone()
                   if (!wasDragged) return
-                  // Which slot did the card's center land in?
-                  var cx = card.x + card.width / 2
-                  var cy = card.y + card.height / 2
+                  // Where did the pointer land? A card's EDGE half means
+                  // "slide in beside it" (and split an overlay layout);
+                  // the middle means swap.
+                  var p = mapToItem(canvas, mouse.x, mouse.y)
                   var boxes = canvas.slotBoxesPx()
                   for (var i = 0; i < boxes.length; i++) {
-                    if (cx >= boxes[i][0] && cx <= boxes[i][0] + boxes[i][2]
-                        && cy >= boxes[i][1] && cy <= boxes[i][1] + boxes[i][3]) {
-                      root.swapSlots(card.index, i)
+                    var b = boxes[i]
+                    if (p.x >= b[0] && p.x <= b[0] + b[2]
+                        && p.y >= b[1] && p.y <= b[1] + b[3]) {
+                      if (i !== card.index) {
+                        var zone = root.zoneForPoint(b, p)
+                        if (zone === "mid") root.swapSlots(card.index, i)
+                        else root.splitDrop(card.index, i, zone === "after")
+                      }
                       break
                     }
                   }
@@ -535,6 +621,20 @@ Item {
             }
           }
 
+          // drop-zone highlight: the half of the hovered card that will
+          // receive the dragged card (edge = split/beside, middle = swap)
+          Rectangle {
+            id: dropHighlight
+            visible: root.dropTarget >= 0 && root.dropZone !== ""
+            z: 150
+            radius: 4
+            color: Qt.alpha(Color.accent, 0.16)
+            border.width: 2
+            border.color: Color.accent
+            opacity: visible ? 1 : 0
+            Behavior on opacity { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+          }
+
           // resize handle at the frame corner (slots mode). No drag.target:
           // pointer moves recompute sizePct and the handle follows its own
           // binding to the frame corner — no binding is ever broken.
@@ -629,7 +729,7 @@ Item {
         Text {
           visible: root.slots
           Layout.fillWidth: true
-          text: qsTr("Drag a card onto another slot to swap · Del removes · Ctrl+←/→ moves")
+          text: qsTr("Drag onto a card's edge to split · center swaps · Del removes · Ctrl+←/→ moves")
           color: Color.muted
           opacity: 0.7
           font.family: Style.font.family
@@ -669,14 +769,68 @@ Item {
 
           Item { Layout.fillWidth: true; height: 1 }
 
-          Text {
+          // The size numbers are a control: clicking them expands sliders
+          // (the wizard's ranges) — the corner handle stays for direct
+          // dragging, but it was too hidden to discover.
+          Button {
             text: (root.draft ? root.draft.sizePct.w : 60) + "% × "
               + (root.draft ? root.draft.sizePct.h : 50) + "%"
               + (root.draft ? "  ·  " + root.draft.marginPx + "px" : "")
-            color: Color.foreground
-            font.family: Style.font.family
-            font.pixelSize: Style.font.caption
-            renderType: Text.NativeRendering
+              + (root.sizeOpen ? "  󰅈" : "  󰏓")
+            tooltipText: qsTr("resize the scratchpad frame")
+            fontSize: Style.font.caption
+            selected: root.sizeOpen
+            onClicked: root.sizeOpen = !root.sizeOpen
+          }
+        }
+
+        // size sliders — same ranges as the wizard; the canvas preview and
+        // the saved geometry both follow live.
+        RowLayout {
+          visible: root.sizeOpen && root.slots
+          Layout.fillWidth: true
+          spacing: Style.space(14)
+
+          ColumnLayout {
+            spacing: 0
+            Layout.fillWidth: true
+            Text { text: qsTr("Width"); color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.caption; renderType: Text.NativeRendering }
+            Slider {
+              id: widthSlider
+              Layout.fillWidth: true
+              from: 30; to: 95
+              value: root.draft ? root.draft.sizePct.w : 60
+              stepSize: 1
+              onMoved: { root.draft.sizePct.w = Math.round(value); root.touch() }
+            }
+          }
+
+          ColumnLayout {
+            spacing: 0
+            Layout.fillWidth: true
+            Text { text: qsTr("Height"); color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.caption; renderType: Text.NativeRendering }
+            Slider {
+              id: heightSlider
+              Layout.fillWidth: true
+              from: 25; to: 95
+              value: root.draft ? root.draft.sizePct.h : 50
+              stepSize: 1
+              onMoved: { root.draft.sizePct.h = Math.round(value); root.touch() }
+            }
+          }
+
+          ColumnLayout {
+            spacing: 0
+            Layout.fillWidth: true
+            Text { text: qsTr("Margin"); color: Color.muted; font.family: Style.font.family; font.pixelSize: Style.font.caption; renderType: Text.NativeRendering }
+            Slider {
+              id: marginSlider
+              Layout.fillWidth: true
+              from: 0; to: 96
+              value: root.draft ? root.draft.marginPx : 12
+              stepSize: 2
+              onMoved: { root.draft.marginPx = Math.round(value); root.touch() }
+            }
           }
         }
 
@@ -1012,15 +1166,28 @@ Item {
     }
 
     // ---------- footer ----------
-    Row {
+    RowLayout {
       Layout.fillWidth: true
       spacing: Style.space(8)
-      layoutDirection: Qt.RightToLeft
+
+      Text {
+        Layout.fillWidth: true
+        visible: keybindCapture.blockingConflict
+        wrapMode: Text.Wrap
+        text: qsTr("That keybind is already taken — pick a free chord to save.")
+        color: Color.urgent
+        font.family: Style.font.family
+        font.pixelSize: Style.font.caption
+        renderType: Text.NativeRendering
+      }
+
+      Item { Layout.fillWidth: !keybindCapture.blockingConflict; height: 1 }
 
       Button {
         text: root.tested ? qsTr("Save changes") : qsTr("Save")
         iconText: "󰸞"
         fontSize: Style.font.body
+        enabled: !keybindCapture.blockingConflict
         onClicked: root.save()
       }
 
@@ -1028,6 +1195,7 @@ Item {
         text: qsTr("Test it now")
         iconText: "󰓅"
         fontSize: Style.font.body
+        enabled: !keybindCapture.blockingConflict
         onClicked: root.testNow()
       }
 
