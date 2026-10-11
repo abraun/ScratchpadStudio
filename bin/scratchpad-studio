@@ -55,7 +55,7 @@ VERSION = "0.2.0"
 RESERVED_SPECIALS = ("scratchpad",)
 
 ANCHORS = ("top", "bottom", "left", "right", "center")
-LAYOUTS = ("single", "pair", "stacked", "three-up", "grid")
+LAYOUTS = ("single", "pair", "stacked", "three-up", "grid", "wide-left", "wide-right")
 # "popin" pairs with the center anchor: the frame has no edge to slide
 # from, so windows scale in instead (Hyprland's popin animation style).
 TRANSITIONS = ("down", "up", "right", "left", "popin")
@@ -480,6 +480,31 @@ def layout_rects(sp: dict, usable: tuple[int, int]) -> list[tuple[int, int, int,
     if layout == "single":
         # Extra apps overlay the first; toggling focus swaps them.
         return [(x, y, w, h)] * count
+
+    if layout in ("wide-left", "wide-right") and count >= 2:
+        # One window spans the full height of its half; the rest stack in
+        # the other half. wide-left: apps[0] tall on the left. wide-right:
+        # apps[-1] tall on the right. With 2 apps this is exactly pair.
+        half = (w - gap) // 2
+        tall_w = half
+        stack_w = w - half - gap
+        stack_x = x + w - stack_w if layout == "wide-left" else x
+        tall_x = x if layout == "wide-left" else x + w - tall_w
+        stack_count = count - 1
+        stack_h = (h - gap * (stack_count - 1)) // stack_count
+        rects = []
+        for index in range(count):
+            if layout == "wide-left":
+                tall = index == 0
+                pos = index - 1          # stack slot, top to bottom
+            else:
+                tall = index == count - 1
+                pos = index              # stack slot, top to bottom
+            if tall:
+                rects.append((tall_x, y, tall_w, h))
+            else:
+                rects.append((stack_x, y + pos * (stack_h + gap), stack_w, stack_h))
+        return rects
 
     if layout == "pair":
         if count == 2:

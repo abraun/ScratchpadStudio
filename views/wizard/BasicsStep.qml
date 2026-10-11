@@ -51,7 +51,9 @@ Item {
           Behavior on border.color { ColorAnimation { duration: 120 } }
         }
         onTextChanged: {
-          if (!root.draft) return
+          // Same-value guard: touched() replaces the draft, which
+          // re-evaluates this binding — re-entering on unchanged text looped.
+          if (!root.draft || root.draft.name === text) return
           root.draft.name = text
           // Free id for the name: sharing a special workspace with another
           // scratchpad (or Omarchy's built-in special:scratchpad) would

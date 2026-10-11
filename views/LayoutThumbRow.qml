@@ -25,10 +25,10 @@ Item {
   signal layoutChosen(string layoutId)
   signal placementChosen(string placement)
 
-  readonly property real thumbW: compact ? Style.space(64) : Style.space(92)
-  readonly property real thumbH: compact ? Style.space(56) : Style.space(80)
-  readonly property real miniW: compact ? Style.space(42) : Style.space(60)
-  readonly property real miniH: compact ? Style.space(26) : Style.space(38)
+  readonly property real thumbW: compact ? Style.space(52) : Style.space(92)
+  readonly property real thumbH: compact ? Style.space(44) : Style.space(80)
+  readonly property real miniW: compact ? Style.space(34) : Style.space(60)
+  readonly property real miniH: compact ? Style.space(20) : Style.space(38)
 
   implicitHeight: placementRow.implicitHeight
      + (placement === "slots" ? thumbs.implicitHeight + Style.space(8) : 0)

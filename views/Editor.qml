@@ -112,9 +112,17 @@ Item {
     var to = from < target ? (after ? target : target - 1)
                            : (after ? target + 1 : target)
     reorderApp(from, to)
+    var n = draft.apps.length
     if (draft.layout === "single" || draft.layout === "stacked") {
-      var n = draft.apps.length
       draft.layout = n >= 4 ? "grid" : (n === 3 ? "three-up" : "pair")
+    } else if (n === 3 &&
+               ["pair", "grid", "three-up", "wide-right"].indexOf(draft.layout) >= 0) {
+      // Three windows and an edge drop means "one side spans, the other
+      // stacks" — the L the captain asked for: drop on a LEFT edge and
+      // the dragged window takes the tall left; drop on a RIGHT edge and
+      // the target keeps the tall left while the dragged one joins the
+      // stacked right (order decides).
+      draft.layout = "wide-left"
     }
     touch()
   }
@@ -291,7 +299,9 @@ Item {
           border.color: iconField.activeFocus ? Color.accent : Color.popups.border
         }
         onTextChanged: {
-          if (!root.draft) return
+          // Same-value re-evaluations (draft replaced by touch()) must not
+          // re-enter touch — that spun a binding-loop warning.
+          if (!root.draft || root.draft.icon === text) return
           root.draft.icon = text
           root.touch()
         }
@@ -315,7 +325,7 @@ Item {
           border.color: nameField.activeFocus ? Color.accent : Color.popups.border
         }
         onTextChanged: {
-          if (!root.draft) return
+          if (!root.draft || root.draft.name === text) return
           root.draft.name = text
           root.touch()
         }
