@@ -75,21 +75,34 @@ Panel {
   Connections {
     target: Hyprland
     function onRawEvent(event) {
-      if (event.name !== "activespecial") return
-      // activespecial>>special:name,MONITOR (empty name = hidden)
-      var parts = String(event.data || "").split(",")
-      var name = parts[0] || ""
-      var id = name.replace(/^special:/, "")
-      var next = {}
-      for (var k in root.shownSpecials) next[k] = root.shownSpecials[k]
-      if (id !== "") next[id] = true
-      else {
-        // A monitor dropped its special; only that monitor's id clears — but
-        // the event does not say which one had it. Cross-check via the CLI.
-        shownProc.running = true
+      if (event.name === "activespecial") {
+        // activespecial>>special:name,MONITOR (empty name = hidden)
+        var parts = String(event.data || "").split(",")
+        var name = parts[0] || ""
+        var id = name.replace(/^special:/, "")
+        var next = {}
+        for (var k in root.shownSpecials) next[k] = root.shownSpecials[k]
+        if (id !== "") next[id] = true
+        else {
+          // A monitor dropped its special; only that monitor's id clears — but
+          // the event does not say which one had it. Cross-check via the CLI.
+          shownProc.running = true
+        }
+        root.shownSpecials = next
+        return
       }
-      root.shownSpecials = next
+      // Window-rule geometry is baked in pixels; a monitor change must
+      // regenerate the rules for the new usable area.
+      if (event.name === "monitoradded" || event.name === "monitorremoved") {
+        reapplyTimer.restart()
+      }
     }
+  }
+
+  Timer {
+    id: reapplyTimer
+    interval: 1500
+    onTriggered: root.helper(["apply"])
   }
 
   implicitWidth: button.implicitWidth
@@ -200,8 +213,7 @@ Panel {
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(936))
     contentHeight: panel.fittedContentHeight(
-      headerRow.height + Math.max(overview.visible ? overview.height : 0,
-                                 wizard.visible ? wizard.height : 0)
+      headerRow.height + (wizard.visible ? Style.space(430) : overview.contentHeightNeeded())
       + Style.space(10), Style.space(680))
 
     PanelKeyCatcher {
@@ -289,36 +301,43 @@ Panel {
           }
 
           // ---------- content: overview or wizard ----------
-          Overview {
-            id: overview
-            visible: !root.wizardMode
-            width: parent.width
-            height: Math.max(Style.space(160),
-                             overview.rows * (overview.cardH + overview.gridGap) + overview.gridGap)
-            cards: root.cards
-            demo: root.demoMode
-            compact: true
+          Item {
+            width: panelFlick.width
+            height: Math.max(overview.visible ? overview.contentHeightNeeded() : 0,
+                             wizard.visible ? Style.space(430) : 0)
 
-            onToggleRequested: function(card) { root.toggleScratchpad(card) }
-            onEditRequested: function(card) { root.editScratchpad(card) }
-            onDeleteRequested: function(card) { root.deleteScratchpad(card) }
-            onDuplicateRequested: function(card) { root.duplicateScratchpad(card) }
-            onAdoptRequested: function(card) { root.helper(["adopt", card.id]) }
-            onNewRequested: root.newScratchpad()
-          }
+            Overview {
+              id: overview
+              visible: !root.wizardMode
+              anchors.fill: parent
+              cards: root.cards
+              demo: root.demoMode
+              compact: true
 
-          Wizard {
-            id: wizard
-            visible: root.wizardMode
-            width: parent.width
-            height: Math.max(Style.space(160),
-                             overview.rows * (overview.cardH + overview.gridGap) + overview.gridGap)
-            editScratchpad: root.wizardScratchpad
-            demo: root.demoMode
-            monitor: root.monitorInfo
+              function contentHeightNeeded() {
+                return Math.max(Style.space(160),
+                                rows * (cardH + gridGap) + gridGap)
+              }
 
-            onFinished: function(sp) { root.closeWizard() }
-            onCanceled: root.closeWizard()
+              onToggleRequested: function(card) { root.toggleScratchpad(card) }
+              onEditRequested: function(card) { root.editScratchpad(card) }
+              onDeleteRequested: function(card) { root.deleteScratchpad(card) }
+              onDuplicateRequested: function(card) { root.duplicateScratchpad(card) }
+              onAdoptRequested: function(card) { root.helper(["adopt", card.id]) }
+              onNewRequested: root.newScratchpad()
+            }
+
+            Wizard {
+              id: wizard
+              visible: root.wizardMode
+              anchors.fill: parent
+              editScratchpad: root.wizardScratchpad
+              demo: root.demoMode
+              monitor: root.monitorInfo
+
+              onFinished: function(sp) { root.closeWizard() }
+              onCanceled: root.closeWizard()
+            }
           }
         }
       }

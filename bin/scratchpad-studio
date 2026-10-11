@@ -562,6 +562,13 @@ def generate_lua(state: dict, helper_path: str, monitor: dict) -> str:
         "-- edit scratchpads in the GUI, never here.",
         "",
     ]
+    # The studio's own app window (class org.quickshell) floats at a sane
+    # size; Hyprland would otherwise tile it into the current workspace.
+    lines.append(
+        'o.window({ class = "^org.quickshell$", title = "^Scratchpad Studio$" }, '
+        '{ float = true, size = "1040 700" })'
+    )
+    lines.append("")
     if not state["scratchpads"]:
         lines.append("-- (no scratchpads configured)")
         lines.append("")

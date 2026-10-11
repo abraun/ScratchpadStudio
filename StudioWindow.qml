@@ -74,30 +74,51 @@ FloatingWindow {
 
         Button {
           anchors.verticalCenter: parent.verticalCenter
-          text: qsTr("New scratchpad")
-          iconText: "󰐗"
+          text: hostWidget && hostWidget.wizardMode ? qsTr("Back to overview") : qsTr("New scratchpad")
+          iconText: hostWidget && hostWidget.wizardMode ? "󰁙" : "󰐗"
           fontSize: Style.font.bodySmall
-          onClicked: hostWidget && hostWidget.newScratchpad()
+          onClicked: {
+            if (hostWidget) hostWidget.wizardMode ? hostWidget.closeWizard() : hostWidget.newScratchpad()
+          }
         }
       }
     }
 
     Rectangle { width: parent.width; height: 1; color: Color.popups.border; opacity: 0.6 }
 
-    // ---------- content ----------
-    Overview {
-      id: overview
+    // ---------- content: overview or wizard (mirrors the panel) ----------
+    Item {
       width: parent.width
       height: parent.height - Style.space(32) - Style.space(10) - 2 - Style.space(10)
-      cards: root.cards
-      demo: root.demo
 
-      onToggleRequested: function(card) { hostWidget && hostWidget.toggleScratchpad(card) }
-      onEditRequested: function(card) { hostWidget && hostWidget.editScratchpad(card) }
-      onDeleteRequested: function(card) { hostWidget && hostWidget.deleteScratchpad(card) }
-      onDuplicateRequested: function(card) { hostWidget && hostWidget.duplicateScratchpad(card) }
-      onAdoptRequested: function(card) { hostWidget && hostWidget.helper(["adopt", card.id]) }
-      onNewRequested: hostWidget && hostWidget.newScratchpad()
+      Overview {
+        id: overview
+        anchors.fill: parent
+        visible: !(hostWidget && hostWidget.wizardMode)
+        cards: root.cards
+        demo: root.demo
+
+        onToggleRequested: function(card) { hostWidget && hostWidget.toggleScratchpad(card) }
+        onEditRequested: function(card) { hostWidget && hostWidget.editScratchpad(card) }
+        onDeleteRequested: function(card) { hostWidget && hostWidget.deleteScratchpad(card) }
+        onDuplicateRequested: function(card) { hostWidget && hostWidget.duplicateScratchpad(card) }
+        onAdoptRequested: function(card) { hostWidget && hostWidget.helper(["adopt", card.id]) }
+        onNewRequested: hostWidget && hostWidget.newScratchpad()
+      }
+
+      Wizard {
+        anchors.fill: parent
+        visible: hostWidget && hostWidget.wizardMode
+        editScratchpad: hostWidget ? hostWidget.wizardScratchpad : null
+        demo: root.demo
+        monitor: {
+          var m = Hyprland.focusedMonitor
+          return m ? { width: m.width || 0, height: m.height || 0, scale: m.scale || 1, name: m.name || "" } : null
+        }
+
+        onFinished: function(sp) { hostWidget && hostWidget.closeWizard() }
+        onCanceled: hostWidget && hostWidget.closeWizard()
+      }
     }
   }
 

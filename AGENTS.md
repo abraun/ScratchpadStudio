@@ -17,9 +17,13 @@ model, and file layout; read it before changing architecture.
   windows to the current workspace; it does not terminate anything.
 - **No network, no telemetry.** The plugin makes zero network calls.
 - Engine facts verified on this machine: `hyprctl dispatch <string>` fails
-  under the Lua config — use `hyprctl eval 'return hl.dsp.…'`. Window-rule
-  `size`/`move` take pixels only (percentages silently ignored), so
-  geometry is baked from `hyprctl -j monitors` at generation time.
+  under the Lua config — use `hyprctl dispatch 'hl.dsp.…'` (with keybind
+  context) for workspace/window dispatchers; `hyprctl eval` runs Lua with
+  NO keybind context, where `toggle_special` and `window.move` silently
+  no-op. Window-rule `size`/`move` take pixels only (percentages silently
+  ignored), so geometry is baked from `hyprctl -j monitors` at generation
+  time; `hyprctl -j workspaces` omits `active` for special workspaces —
+  shown-state comes from the focused monitor's `specialWorkspace` field.
 
 ## Layout / commands
 
@@ -38,13 +42,22 @@ model, and file layout; read it before changing architecture.
 
 1. Copy the worktree into `~/.config/omarchy/plugins/scratchpad-studio`
    (rsync, exclude `.git`), then `omarchy plugin enable scratchpad-studio`
-   and `omarchy-restart-shell` (or reload via `qs` ipc) to pick up QML.
-2. Screenshots: `grim /tmp/shot.png` after opening the panel with
-   `omarchy-shell shell toggle scratchpad-studio`. Keep proof artifacts
-   OUTSIDE the worktree. README screenshots must use demo mode
+   and `omarchy-restart-shell` to pick up QML.
+2. **QML edits need a full shell restart** — plugin hot-reload recreates the
+   widget but does not recompile changed QML types or re-register IPC
+   functions (verified live: new IpcHandler functions only appear after
+   `omarchy-restart-shell`; a session lock makes restart refuse — wait for
+   the user to return rather than forcing anything).
+3. Screenshots: open the app window (`ipc call scratchpad-studio window`),
+   read its exact geometry from `hyprctl -j clients` (title "Scratchpad
+   Studio"), and `grim -g` that rect — no desktop bleed, no real titles in
+   frame. Panel shots crop imprecisely; prefer the window for README art.
+   README screenshots must use demo mode
    (`qs -p /usr/share/omarchy/shell ipc call scratchpad-studio demo on`).
-3. QML logs: `journalctl --user -u omarchy-shell -n 50` or the shell's
-   stdout depending on how it was started.
+4. Synthetic keyboard input does NOT reach layer-shell panels
+   (wtype/hl.dsp.send_key_state both fail) — keyboard flows are verified
+   structurally (focus wiring + no QML errors) and by hand.
+5. QML logs: `journalctl --user -n 50 | grep scratchpad-studio`.
 
 ## Style
 

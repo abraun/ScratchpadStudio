@@ -15,11 +15,12 @@ HELPER = "/home/abraun/.config/omarchy/plugins/scratchpad-studio/bin/scratchpad-
 
 
 class TestGenerateLua(FixtureCase):
-    def test_empty_state_generates_comment_only(self):
+    def test_empty_state_generates_no_scratchpad_rules(self):
         lua = self.sst.generate_lua(state(), HELPER, MONITOR)
-        self.assertNotIn("o.window", lua)
-        self.assertNotIn("o.bind", lua)
         self.assertIn("no scratchpads configured", lua)
+        # the studio's own window rule is always present; nothing else is
+        self.assertEqual(lua.count("o.window"), 1)
+        self.assertNotIn("o.bind", lua)
 
     def test_window_rule_shape(self):
         lua = self.sst.generate_lua(state(sp()), HELPER, MONITOR)
@@ -47,7 +48,17 @@ class TestGenerateLua(FixtureCase):
         app = {"name": "Weird", "command": "weird", "class": "",
                "webapp": False, "singleInstance": False}
         lua = self.sst.generate_lua(state(sp(apps=[app])), HELPER, MONITOR)
-        self.assertNotIn("o.window", lua)
+        # only the studio window's own rule
+        self.assertEqual(lua.count("o.window"), 1)
+        self.assertNotIn('class = ""', lua)
+
+    def test_studio_window_float_rule_always_present(self):
+        lua = self.sst.generate_lua(state(), HELPER, MONITOR)
+        self.assertIn(
+            'o.window({ class = "^org.quickshell$", title = "^Scratchpad Studio$" }, '
+            '{ float = true, size = "1040 700" })',
+            lua,
+        )
 
     def test_luajacking_via_class_name_is_escaped(self):
         evil_class = 'a"), os.exit()--'
