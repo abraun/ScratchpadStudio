@@ -188,13 +188,18 @@ Item {
       height: Style.space(28)
       fontSize: Style.font.bodySmall
       iconText: root.card.status === "shown" ? "󰈈" : "󰈄"
+      tooltipText: root.card.status === "shown" ? qsTr("Hide this scratchpad") : qsTr("Show this scratchpad")
       onClicked: root.toggleRequested()
     }
     Button {
       id: editBtn
       Layout.alignment: Qt.AlignVCenter
       visible: root.card.editable || root.card.adoptable
-      text: root.card.adoptable ? qsTr("Adopt") : qsTr("Edit")
+      // Managed cards carry four actions in 268px — Edit/Copy/Delete go
+      // icon-only (tooltips carry the meaning) or the Show label clips to
+      // a sliver. Adopt keeps its word: adoptable cards have room.
+      text: root.card.adoptable ? qsTr("Adopt") : ""
+      tooltipText: root.card.adoptable ? qsTr("Adopt this workspace into the studio") : qsTr("Edit this scratchpad")
       height: Style.space(28)
       fontSize: Style.font.bodySmall
       iconText: root.card.adoptable ? "󰐗" : "󰏫"
@@ -204,7 +209,7 @@ Item {
       id: copyBtn
       Layout.alignment: Qt.AlignVCenter
       visible: root.card.editable
-      text: qsTr("Copy")
+      text: ""
       tooltipText: qsTr("Duplicate this scratchpad")
       height: Style.space(28)
       fontSize: Style.font.bodySmall
@@ -215,7 +220,8 @@ Item {
       id: deleteBtn
       Layout.alignment: Qt.AlignVCenter
       visible: root.card.origin !== "builtin"
-      text: qsTr("Delete")
+      text: ""
+      tooltipText: qsTr("Delete this scratchpad — its windows stay open")
       height: Style.space(28)
       fontSize: Style.font.bodySmall
       foreground: Color.urgent
