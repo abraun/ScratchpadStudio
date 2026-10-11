@@ -5,7 +5,8 @@ import Quickshell.Hyprland
 import qs.Commons
 import qs.Ui
 import "views"
-import "lib" as Lib
+import "lib/StudioState.js" as StudioState
+import "lib/LiveModel.js" as LiveModel
 
 // Scratchpad Studio — bar widget + panel + app window.
 //
@@ -32,10 +33,10 @@ Panel {
   property bool demoMode: setting("demoMode", "Off") === "On" || setting("demoMode", false) === true
   property string stateJson: ""
   readonly property var state: {
-    if (demoMode) return Lib.StudioState.demoState()
-    if (stateJson === "") return Lib.StudioState.defaultState()
-    try { return Lib.StudioState.normalizeState(JSON.parse(stateJson)) }
-    catch (e) { return Lib.StudioState.defaultState() }
+    if (demoMode) return StudioState.demoState()
+    if (stateJson === "") return StudioState.defaultState()
+    try { return StudioState.normalizeState(JSON.parse(stateJson)) }
+    catch (e) { return StudioState.defaultState() }
   }
 
   // Live card model. Reading Hyprland.toplevels.values and
@@ -43,8 +44,52 @@ Panel {
   // moves, closes or a workspace toggles — no polling.
   readonly property var cards: {
     var state = root.state
-    if (demoMode) return Lib.LiveModel.demoCards(state, Lib.StudioState.demoWindows)
-    return Lib.LiveModel.buildCards(state, Hyprland.toplevels.values, Hyprland.workspaces.values)
+    var shown = root.shownSpecials
+    if (demoMode) return LiveModel.demoCards(state, StudioState.demoWindows)
+    return LiveModel.buildCards(state, Hyprland.toplevels.values,
+                                Hyprland.workspaces.values, shown)
+  }
+
+  // Which specials are revealed, by id. Quickshell's workspace model keeps
+  // `active` false for special workspaces on this Hyprland (verified), so
+  // the activespecial event is the live source; `shown` CLI seeds startup.
+  property var shownSpecials: ({})
+
+  Component.onCompleted: shownProc.running = true
+
+  Process {
+    id: shownProc
+    command: ["bash", "-c", JSON.stringify(root.helperPath) + " shown 2>/dev/null"]
+    stdout: StdioCollector {
+      onStreamFinished: {
+        try {
+          var ids = JSON.parse(text)
+          var next = {}
+          for (var i = 0; i < ids.length; i++) next[ids[i]] = true
+          root.shownSpecials = next
+        } catch (e) { }
+      }
+    }
+  }
+
+  Connections {
+    target: Hyprland
+    function onRawEvent(event) {
+      if (event.name !== "activespecial") return
+      // activespecial>>special:name,MONITOR (empty name = hidden)
+      var parts = String(event.data || "").split(",")
+      var name = parts[0] || ""
+      var id = name.replace(/^special:/, "")
+      var next = {}
+      for (var k in root.shownSpecials) next[k] = root.shownSpecials[k]
+      if (id !== "") next[id] = true
+      else {
+        // A monitor dropped its special; only that monitor's id clears — but
+        // the event does not say which one had it. Cross-check via the CLI.
+        shownProc.running = true
+      }
+      root.shownSpecials = next
+    }
   }
 
   implicitWidth: button.implicitWidth
@@ -232,12 +277,29 @@ Panel {
     function close(): void { root.close() }
     function toggle(): void { root.toggle() }
     function window(): string { root.openWindow(); return "ok" }
-    function demo(mode): void {
+    function demo(mode: string): void {
       root.demoMode = String(mode) === "on" || String(mode) === "true"
     }
     function status(): string {
       return "demo=" + root.demoMode + " scratchpads=" + root.cards.length
         + " helper=" + (root.helperPath.length > 0 ? "ok" : "?")
+    }
+    function inspect(): string {
+      var specials = []
+      var items = Hyprland.workspaces.values
+      for (var i = 0; i < items.length; i++) {
+        var name = String(items[i].name || "")
+        if (name.indexOf("special:") === 0)
+          specials.push({ name: name, active: items[i].active === true, id: items[i].id })
+      }
+      return JSON.stringify({
+        cursor: overview.cursor,
+        columns: overview.columns,
+        rows: overview.rows,
+        names: root.cards.map(function (c) { return c.id + ":" + c.status }),
+        focusedWorkspace: Hyprland.focusedWorkspace ? String(Hyprland.focusedWorkspace.name || "") : "",
+        specials: specials
+      })
     }
   }
 }

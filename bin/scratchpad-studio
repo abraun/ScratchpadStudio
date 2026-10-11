@@ -62,16 +62,34 @@ def hyprctl(args: list[str], check: bool = True) -> str:
 
 
 def hyprctl_json(args: list[str]):
-    return json.loads(hyprctl(args))
+    # Callers may pass "-j" themselves (most do); don't duplicate it.
+    return json.loads(hyprctl(args if args and args[0] == "-j" else ["-j"] + args))
 
 
 def eval_lua(code: str) -> None:
-    """Run a Lua snippet in Hyprland. Dies with the compositor's error."""
+    """Run a Lua snippet in Hyprland. Dies with the compositor's error.
+
+    Note: code run through `eval` has NO keybind/input context — workspace
+    dispatchers like toggle_special silently no-op there (verified live).
+    Anything that acts on the focused monitor must go through dispatch_lua.
+    """
     result = subprocess.run(
         ["hyprctl", "eval", code], capture_output=True, text=True, timeout=10
     )
     if result.returncode != 0:
         die(f"hyprctl eval failed: {result.stderr.strip()}")
+
+
+def dispatch_lua(code: str) -> None:
+    """Run a Lua dispatcher with keybind context. `hyprctl dispatch` in
+    Lua-config mode takes a hl.dsp.* expression as its argument and supplies
+    the context that makes toggle_special actually reveal the workspace
+    (verified live: eval returns ok but never shows; dispatch works)."""
+    result = subprocess.run(
+        ["hyprctl", "dispatch", code], capture_output=True, text=True, timeout=10
+    )
+    if result.returncode != 0:
+        die(f"hyprctl dispatch failed: {result.stderr.strip()}")
 
 
 def lua_quote(text: str) -> str:
@@ -106,8 +124,8 @@ def normalize_sp(sp: dict) -> dict:
         "layout": sp.get("layout") if sp.get("layout") in LAYOUTS else "single",
         "transition": sp.get("transition") if sp.get("transition") in TRANSITIONS else "down",
         "sizePct": {
-            "w": clamp(sp.get("w", 60), 30, 95),
-            "h": clamp(sp.get("h", 50), 25, 95),
+            "w": clamp(size.get("w", 60), 30, 95),
+            "h": clamp(size.get("h", 50), 25, 95),
         },
         "marginPx": int(clamp(sp.get("marginPx", 12), 0, 128)),
         "apps": [normalize_app(a) for a in (sp.get("apps") or [])],
@@ -195,15 +213,29 @@ def workspaces() -> list:
 
 
 def special_is_shown(sp_id: str) -> bool:
+    # hyprctl's workspace JSON omits the active flag for special workspaces;
+    # the focused monitor's specialWorkspace field is the reliable source
+    # (verified live: shows {"id": -97, "name": "special:testpad"} only
+    # while the special is revealed on that monitor).
     name = f"special:{sp_id}"
-    for ws in workspaces():
-        if ws.get("name") == name:
-            return bool(ws.get("active"))
+    for monitor in monitors():
+        special = monitor.get("specialWorkspace") or {}
+        if str(special.get("name") or "") == name and (monitor.get("focused") or monitor == monitors()[0]):
+            return True
     return False
 
 
 def window_classes() -> set[str]:
     return {str(c.get("class") or "") for c in clients() if c.get("mapped", True)}
+
+
+def classes_on_special(sp_id: str) -> set[str]:
+    name = f"special:{sp_id}"
+    return {
+        str(c.get("class") or "")
+        for c in clients()
+        if c.get("mapped", True) and str(c.get("workspace", {}).get("name") or "") == name
+    }
 
 
 # ---------------------------------------------------------------- geometry
@@ -309,12 +341,20 @@ def transition_rule(sp: dict) -> str | None:
 
 
 def launch_missing(sp: dict) -> None:
-    have = window_classes()
+    # "Running" means the scratchpad already owns a window of this class on
+    # its special workspace — a window of the same class living in the user's
+    # regular workspaces is NOT this scratchpad's copy, so we launch our own
+    # (the window rules route it into the hidden special). Exception:
+    # single-instance apps can't open a second copy, so any instance counts.
+    on_special = classes_on_special(sp["id"])
+    have_anywhere = window_classes()
     for app in sp["apps"]:
         if not app["command"]:
             continue
-        if app["class"] and app["class"] in have:
-            continue  # already running somewhere; the workspace holds it
+        if app["class"] and app["class"] in on_special:
+            continue
+        if app["class"] and app["singleInstance"] and app["class"] in have_anywhere:
+            continue
         command = app["command"]
         if shutil.which("uwsm-app"):
             argv = ["uwsm-app", "--", "sh", "-c", command]
@@ -333,28 +373,38 @@ def toggle(sp_id: str) -> None:
     sp = find_sp(state, sp_id)
     if sp is None:
         die(f"unknown scratchpad: {sp_id}")
-    if special_is_shown(sp_id):
-        eval_lua(f'return hl.dsp.workspace.toggle_special({lua_quote(sp_id)})')
-        return
-    monitor = focused_monitor()
-    for snippet in runtime_rules(sp, monitor):
-        eval_lua(snippet)
-    rule = transition_rule(sp)
-    if rule:
-        eval_lua(rule)
-    launch_missing(sp)
-    eval_lua(f'return hl.dsp.workspace.toggle_special({lua_quote(sp_id)})')
+    shown = special_is_shown(sp_id)
+    if not shown:
+        monitor = focused_monitor()
+        for snippet in runtime_rules(sp, monitor):
+            eval_lua(snippet)
+        rule = transition_rule(sp)
+        if rule:
+            eval_lua(rule)
+        launch_missing(sp)
+        dispatch_lua(f'hl.dsp.workspace.toggle_special({lua_quote(sp_id)})')
+    else:
+        # Already on screen: the chord means "hide". Relaunching missing apps
+        # while visible would toggle us closed, so only the hide happens.
+        dispatch_lua(f'hl.dsp.workspace.toggle_special({lua_quote(sp_id)})')
 
 
 # ---------------------------------------------------------------- commands
 
+def shown_specials() -> set[str]:
+    """Ids of special workspaces currently revealed on any monitor."""
+    out = set()
+    for monitor in monitors():
+        special = monitor.get("specialWorkspace") or {}
+        name = str(special.get("name") or "")
+        if name.startswith("special:"):
+            out.add(name[len("special:"):])
+    return out
+
+
 def cmd_list() -> None:
     state = load_state()
-    shown = set()
-    for ws in workspaces():
-        name = str(ws.get("name") or "")
-        if name.startswith("special:") and ws.get("active"):
-            shown.add(name[len("special:"):])
+    shown = shown_specials()
     classes = window_classes()
     out = []
     for sp in state["scratchpads"]:
@@ -397,6 +447,8 @@ def main(argv: list[str]) -> None:
         cmd_geometry(argv[2])
     elif command == "state-path":
         print(STATE_PATH)
+    elif command == "shown":
+        print(json.dumps(sorted(shown_specials())))
     elif command == "version":
         print(VERSION)
     else:

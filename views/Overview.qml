@@ -24,24 +24,25 @@ Item {
   signal closeRequested()
 
   property int cursor: 0
+  readonly property var cardList: cards || []
   readonly property real cardW: Style.space(288)
   readonly property real cardH: Style.space(212)
   readonly property real gridGap: Style.space(12)
   readonly property int columns: Math.max(1, Math.floor((width + gridGap) / (cardW + gridGap)))
-  readonly property int rows: Math.max(1, Math.ceil(cards.length / columns))
+  readonly property int rows: Math.max(1, Math.ceil(cardList.length / columns))
 
   onCardsChanged: {
-    if (cursor >= cards.length) cursor = Math.max(0, cards.length - 1)
+    if (cursor >= cardList.length) cursor = Math.max(0, cardList.length - 1)
   }
 
   function moveCursor(dx, dy) {
-    if (cards.length === 0) return
+    if (cardList.length === 0) return
     var col = cursor % columns
     var row = Math.floor(cursor / columns)
     if (dx !== 0) col = Math.min(columns - 1, Math.max(0, col + dx))
     if (dy !== 0) row = Math.min(rows - 1, Math.max(0, row + dy))
     var next = row * columns + col
-    cursor = Math.min(cards.length - 1, next)
+    cursor = Math.min(cardList.length - 1, next)
     ensureVisible(cursor)
   }
 
@@ -55,15 +56,15 @@ Item {
   }
 
   function activate() {
-    if (cards.length === 0) { newRequested(); return }
-    var card = cards[cursor]
+    if (cardList.length === 0) { newRequested(); return }
+    var card = cardList[cursor]
     if (card) toggleRequested(card)
   }
 
   // ---------- empty state ----------
   EmptyState {
     anchors.fill: parent
-    visible: root.cards.length === 0
+    visible: root.cardList.length === 0
     onNewRequested: root.newRequested()
   }
 
@@ -71,7 +72,7 @@ Item {
   Flickable {
     id: flick
     anchors.fill: parent
-    visible: root.cards.length > 0
+    visible: root.cardList.length > 0
     contentWidth: width
     contentHeight: grid.height + Style.space(4)
     clip: true
@@ -89,14 +90,14 @@ Item {
       spacing: root.gridGap
 
       Repeater {
-        model: root.cards.length
+        model: root.cardList.length
 
         ScratchpadCard {
           required property int index
 
-          card: root.cards[index]
+          card: root.cardList[index]
           demo: root.demo
-          hasCursor: root.cursor === index && root.cards.length > 0
+          hasCursor: root.cursor === index && root.cardList.length > 0
 
           onToggleRequested: root.toggleRequested(card)
           onEditRequested: root.editRequested(card)
