@@ -186,7 +186,22 @@ Item {
       AppsStep { draft: root.draft; demo: root.demo; onTouched: root.touch() }
       LayoutStep { draft: root.draft; usable: root.usable(); onTouched: root.touch() }
       TransitionStep { draft: root.draft; onTouched: root.touch() }
-      KeybindStep { draft: root.draft; onTouched: root.touch() }
+      KeybindStep {
+        id: keybindStepItem
+        draft: root.draft
+        onTouched: root.touch()
+        // The step sees raw chords only while it holds focus; grab it when
+        // it becomes current so capture works without a click.
+        Connections {
+          target: root
+          function onStepChanged() {
+            if (root.step === 4) Qt.callLater(function() { keybindStepItem.forceActiveFocus() })
+          }
+        }
+        Component.onCompleted: {
+          if (root.step === 4) Qt.callLater(function() { keybindStepItem.forceActiveFocus() })
+        }
+      }
       SummaryStep {
         draft: root.draft
         usable: root.usable()

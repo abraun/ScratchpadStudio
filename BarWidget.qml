@@ -207,6 +207,9 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      // The wizard owns the keyboard while it is open: its TextFields eat
+      // typing and its capture mode needs raw chords (arrows included).
+      blocked: root.wizardMode
 
       onMoveRequested: function(dx, dy) { overview.moveCursor(dx, dy) }
       onActivateRequested: overview.activate()

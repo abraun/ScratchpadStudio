@@ -26,6 +26,12 @@ Item {
     if (root.draft && root.draft.keybind !== "") conflictProc.running = true
   }
 
+  // Entering the step with no chord armed: start capturing immediately —
+  // focus alone is the invitation.
+  onActiveFocusChanged: {
+    if (activeFocus && root.draft && root.draft.keybind === "") capturing = true
+  }
+
   function refreshConflicts(chord) {
     draft.keybind = chord
     touched()
