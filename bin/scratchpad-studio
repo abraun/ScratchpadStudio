@@ -3,20 +3,27 @@
 
 Everything the GUI cannot do from QML lives here: reading Hyprland state,
 computing window geometry, launching apps, toggling special workspaces, and
-(milestone b) generating the managed Hyprland config.
+generating the managed Hyprland config (persistent rules + keybinds).
 
 Stdlib only. No network. Never closes or kills the user's windows.
 
 Usage: scratchpad-studio <command> [args]
-  list                 print scratchpads + live status as JSON
-  toggle <id>          show/hide a scratchpad, launching missing apps
-  geometry <id>        print computed window rects (debug)
-  state-path           print the state file path
-  version              print the plugin version
+  list                    print scratchpads + live status as JSON
+  toggle <id>             show/hide a scratchpad, launching missing apps
+  show <id> / hide <id>   reveal or hide without toggling
+  geometry <id>           print computed window rects (debug)
+  shown                   print revealed special ids as JSON
+  apply                   regenerate Hyprland config from state + reload
+  delete <id> [--keep]    remove scratchpad (windows move to current ws)
+  adopt <id> [--name N]   take over an existing special workspace
+  install / uninstall     wire in / cleanly remove the managed config
+  state-path              print the state file path
+  version                 print the plugin version
 """
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import shutil
@@ -25,9 +32,17 @@ import sys
 from pathlib import Path
 
 HOME = Path(os.environ.get("HOME", str(Path.home())))
-STATE_DIR = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "scratchpad-studio"
+CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config"))
+STATE_DIR = CONFIG_DIR / "scratchpad-studio"
 STATE_PATH = STATE_DIR / "scratchpads.json"
 BACKUP_DIR = STATE_DIR / "backups"
+HYPR_DIR = CONFIG_DIR / "hypr"
+GENERATED_LUA = HYPR_DIR / "scratchpad-studio.lua"
+BINDINGS_LUA = HYPR_DIR / "bindings.lua"
+
+BLOCK_BEGIN = "-- >>> scratchpad-studio (managed) >>>"
+BLOCK_END = "-- <<< scratchpad-studio (managed) <<<"
+BLOCK_LINES = [BLOCK_BEGIN, 'require("hypr.scratchpad-studio")', BLOCK_END]
 
 GAP_MIN_PX = 6
 VERSION = "0.1.0"
@@ -389,6 +404,350 @@ def toggle(sp_id: str) -> None:
         dispatch_lua(f'hl.dsp.workspace.toggle_special({lua_quote(sp_id)})')
 
 
+def show(sp_id: str) -> None:
+    state = load_state()
+    sp = find_sp(state, sp_id)
+    if sp is None:
+        die(f"unknown scratchpad: {sp_id}")
+    if special_is_shown(sp_id):
+        return
+    monitor = focused_monitor()
+    for snippet in runtime_rules(sp, monitor):
+        eval_lua(snippet)
+    rule = transition_rule(sp)
+    if rule:
+        eval_lua(rule)
+    launch_missing(sp)
+    dispatch_lua(f'hl.dsp.workspace.toggle_special({lua_quote(sp_id)})')
+
+
+def hide(sp_id: str) -> None:
+    if not special_is_shown(sp_id):
+        return
+    dispatch_lua(f'hl.dsp.workspace.toggle_special({lua_quote(sp_id)})')
+
+
+# ------------------------------------------------------- config generation
+
+def generate_lua(state: dict, helper_path: str, monitor: dict) -> str:
+    """The plugin-owned ~/.config/hypr/scratchpad-studio.lua. Fully rewritten
+    on every apply; contains only o.bind/o.window calls derived from state.
+    Geometry is baked in pixels (window rules ignore percentages) from the
+    given monitor; `apply` regenerates whenever monitors change."""
+    usable = usable_area(monitor)
+    monitor_name = monitor.get("name", "")
+    lines = [
+        "-- scratchpad-studio: managed by the Scratchpad Studio plugin.",
+        "-- Regenerated from ~/.config/scratchpad-studio/scratchpads.json —",
+        "-- edit scratchpads in the GUI, never here.",
+        "",
+    ]
+    if not state["scratchpads"]:
+        lines.append("-- (no scratchpads configured)")
+        lines.append("")
+    for sp in state["scratchpads"]:
+        lines.append(f"-- {sp['name']} ({sp['id']})")
+        rects = layout_rects(sp, usable)
+        for app, rect in zip(sp["apps"], rects):
+            if not app["class"]:
+                continue
+            rules = [f'workspace = "special:{sp["id"]} silent"', "float = true",
+                     f'size = "{rect[2]} {rect[3]}"', f'move = "{rect[0]} {rect[1]}"']
+            if monitor_name:
+                rules.append(f'monitor = {lua_quote(monitor_name)}')
+            style = {"down": "slide", "up": "slide", "right": "slide", "left": "slide"}.get(sp["transition"])
+            if style:
+                rules.append(f"animation = {lua_quote(style)}")
+            lines.append(f"o.window({{ class = {lua_quote(app['class'])} }}, {{ {', '.join(rules)} }})")
+        if sp["keybind"]:
+            command = f"{helper_path} toggle {sp['id']}"
+            lines.append(
+                f"o.bind({lua_quote(sp['keybind'])}, {lua_quote('Scratchpad: ' + sp['name'])}, "
+                f"{lua_quote(command)})"
+            )
+        lines.append("")
+    return "\n".join(lines)
+
+
+def helper_abs_path() -> str:
+    return str(Path(__file__).resolve())
+
+
+def atomic_write(path: Path, content: str, mode: int = 0o644) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(content)
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+
+
+def backup_file(path: Path, tag: str) -> Path | None:
+    if not path.exists():
+        return None
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    target = BACKUP_DIR / f"{tag}-{stamp}-{path.name}"
+    # Keep uniqueness even within one second.
+    suffix = 0
+    while target.exists():
+        suffix += 1
+        target = BACKUP_DIR / f"{tag}-{stamp}-{suffix}-{path.name}"
+    shutil.copy2(path, target)
+    return target
+
+
+def ensure_block(content: str) -> str:
+    """Insert/replace the managed require block in bindings.lua content.
+    Idempotent; refuses nothing — the block is always exactly BLOCK_LINES."""
+    if BLOCK_BEGIN in content and BLOCK_END in content:
+        before, rest = content.split(BLOCK_BEGIN, 1)
+        _, after = rest.split(BLOCK_END, 1)
+    else:
+        # Append at the end, separated by a blank line.
+        before = content if content.endswith("\n") or content == "" else content + "\n"
+        if before != "" and not before.endswith("\n\n"):
+            before += "\n"
+        after = ""
+    block = "\n".join(BLOCK_LINES) + "\n"
+    if after.startswith("\n"):
+        after = after[1:]
+    return before + block + after
+
+
+def remove_block(content: str) -> str:
+    if BLOCK_BEGIN not in content:
+        return content
+    before, rest = content.split(BLOCK_BEGIN, 1)
+    if BLOCK_END not in rest:
+        raise RuntimeError("managed block is missing its end marker; refusing to edit")
+    _, after = rest.split(BLOCK_END, 1)
+    if after.startswith("\n"):
+        after = after[1:]
+    # Trim a doubled blank line left behind at the seam.
+    if before.endswith("\n\n") and after.strip() == "":
+        before = before[:-1]
+    return before + after
+
+
+def config_errors() -> str:
+    result = subprocess.run(["hyprctl", "configerrors"], capture_output=True, text=True, timeout=10)
+    return (result.stdout + result.stderr).strip()
+
+
+def apply(quiet: bool = False) -> None:
+    state = load_state()
+    monitor = focused_monitor()
+    lua = generate_lua(state, helper_abs_path(), monitor)
+
+    # Back up before every write; restore both if the reload rejects them.
+    backup_file(GENERATED_LUA, "apply")
+    old_generated = GENERATED_LUA.read_text() if GENERATED_LUA.exists() else None
+    atomic_write(GENERATED_LUA, lua)
+
+    bindings = BINDINGS_LUA.read_text() if BINDINGS_LUA.exists() else ""
+    if bindings != ensure_block(bindings):
+        backup_file(BINDINGS_LUA, "apply")
+        old_bindings = bindings
+        atomic_write(BINDINGS_LUA, ensure_block(bindings))
+    else:
+        old_bindings = None
+
+    subprocess.run(["hyprctl", "reload"], capture_output=True, text=True, timeout=10)
+    import time
+    time.sleep(0.3)
+    errors = config_errors()
+    if "scratchpad-studio" in errors:
+        if old_generated is None:
+            GENERATED_LUA.unlink(missing_ok=True)
+        else:
+            atomic_write(GENERATED_LUA, old_generated)
+        if old_bindings is not None:
+            atomic_write(BINDINGS_LUA, old_bindings)
+        subprocess.run(["hyprctl", "reload"], capture_output=True, timeout=10)
+        die(f"config rejected by Hyprland, rolled back: {errors}")
+    if not quiet:
+        print(f"applied {len(state['scratchpads'])} scratchpad(s)")
+
+
+def move_windows_out(sp_id: str) -> int:
+    """Move the scratchpad's windows to the focused workspace (never kill).
+    Returns how many windows were moved."""
+    name = f"special:{sp_id}"
+    active = hyprctl_json(["activeworkspace"])
+    target_ws = str(active.get("name") or "")
+    if target_ws == "" or target_ws.startswith("special:"):
+        target_ws = str(active.get("id") or "1")
+    moved = 0
+    for client in clients():
+        if str(client.get("workspace", {}).get("name") or "") != name:
+            continue
+        address = client.get("address")
+        if not address:
+            continue
+        # window dispatchers need the keybind context too: via eval the
+        # move silently no-ops (verified live) — dispatch moves it.
+        dispatch_lua(
+            f'hl.dsp.window.move({{ window = {lua_quote("address:" + address)}, '
+            f'workspace = {lua_quote(target_ws)}, follow = false }})'
+        )
+        moved += 1
+    return moved
+
+
+def delete(sp_id: str, keep_windows: bool) -> None:
+    state = load_state()
+    sp = find_sp(state, sp_id)
+    if sp is None:
+        die(f"unknown scratchpad: {sp_id}")
+    if not keep_windows:
+        moved = move_windows_out(sp_id)
+    else:
+        moved = 0
+    state["scratchpads"] = [s for s in state["scratchpads"] if s["id"] != sp_id]
+    save_state(state)
+    apply(quiet=True)
+    print(f"deleted {sp_id} ({moved} window(s) moved to the current workspace)")
+
+
+def adopt(sp_id: str, name: str | None) -> None:
+    state = load_state()
+    if find_sp(state, sp_id):
+        die(f"already managed: {sp_id}")
+    live = [str(ws.get("name") or "") for ws in workspaces()]
+    if f"special:{sp_id}" not in live:
+        die(f"no such special workspace: special:{sp_id}")
+    state["scratchpads"].append(normalize_sp({
+        "id": sp_id,
+        "name": name or sp_id.replace("-", " ").replace("_", " ").title(),
+        "icon": "",
+        "keybind": "",
+        "anchor": "top",
+        "layout": "single",
+        "transition": "down",
+        "sizePct": {"w": 60, "h": 50},
+        "marginPx": 12,
+        "apps": [],
+    }))
+    save_state(state)
+    apply(quiet=True)
+    print(f"adopted special:{sp_id}")
+
+
+def install() -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    if not STATE_PATH.exists():
+        save_state(default_state())
+    apply()
+
+
+def uninstall(purge: bool) -> None:
+    backup_file(BINDINGS_LUA, "uninstall")
+    if BINDINGS_LUA.exists():
+        content = BINDINGS_LUA.read_text()
+        if BLOCK_BEGIN in content:
+            atomic_write(BINDINGS_LUA, remove_block(content))
+    GENERATED_LUA.unlink(missing_ok=True)
+    subprocess.run(["hyprctl", "reload"], capture_output=True, timeout=10)
+    if purge:
+        shutil.rmtree(STATE_DIR, ignore_errors=True)
+        print("uninstalled; state removed")
+    else:
+        print("uninstalled; state kept at", STATE_PATH)
+
+
+# ------------------------------------------------------- keybind conflicts
+
+MOD_BITS = [
+    (1, "SHIFT"), (2, "CAPS"), (4, "CTRL"), (8, "ALT"),
+    (16, "MOD2"), (32, "MOD3"), (64, "SUPER"), (128, "MOD5"),
+]
+KNOWN_MODS = {name for _, name in MOD_BITS}
+
+
+def chord_modmask(chord: str) -> int | None:
+    """'ALT + SUPER + P' -> 72. None when the chord is malformed."""
+    parts = [p.strip() for p in str(chord or "").split("+")]
+    if not parts or any(p == "" for p in parts):
+        return None
+    key = parts[-1]
+    mods = parts[:-1]
+    mask = 0
+    for mod in mods:
+        name = mod.upper()
+        if name not in KNOWN_MODS:
+            return None
+        bit = next(b for b, n in MOD_BITS if n == name)
+        mask |= bit
+    if len(key) == 0:
+        return None
+    return mask
+
+
+def chord_key(chord: str) -> str:
+    return str(chord or "").split("+")[-1].strip()
+
+
+def find_bind_conflict(chord: str, binds: list) -> dict | None:
+    mask = chord_modmask(chord)
+    key = chord_key(chord)
+    if mask is None:
+        return None
+    for bind in binds:
+        if bind.get("keycode"):
+            continue  # keycode binds can't collide with named keys
+        if bind.get("modmask") == mask and str(bind.get("key") or "") == key:
+            return bind
+    return None
+
+
+def scan_config_chords(files: dict) -> list:
+    """Textual scan of hypr config files for o.bind/hl.bind chords. Skips our
+    own managed block. Returns [(chord, filename), ...]."""
+    hits = []
+    for name, content in files.items():
+        if self_marker(content):
+            content = strip_managed(content)
+        for line in content.splitlines():
+            stripped = line.strip()
+            if not (stripped.startswith("o.bind(") or stripped.startswith("hl.bind(")):
+                continue
+            first = stripped.split("(", 1)[1].split(",", 1)[0].strip().strip("'\"")
+            if first:
+                hits.append((first, name))
+    return hits
+
+
+def self_marker(content: str) -> bool:
+    return BLOCK_BEGIN in content
+
+
+def strip_managed(content: str) -> str:
+    if BLOCK_BEGIN not in content:
+        return content
+    before, rest = content.split(BLOCK_BEGIN, 1)
+    if BLOCK_END not in rest:
+        return content
+    _, after = rest.split(BLOCK_END, 1)
+    return before + after
+
+
+def cmd_conflicts(chord: str) -> None:
+    import glob
+    binds = hyprctl_json(["-j", "binds"])
+    live = find_bind_conflict(chord, binds)
+    files = {}
+    for pattern in ("bindings*.lua", "*.lua"):
+        for path in sorted(set(glob.glob(str(HYPR_DIR / pattern)))):
+            files[Path(path).name] = Path(path).read_text()
+    config_hits = [hit for hit in scan_config_chords(files) if hit[0] == chord]
+    print(json.dumps({
+        "chord": chord,
+        "valid": chord_modmask(chord) is not None,
+        "liveBind": live,
+        "configLines": config_hits,
+    }, indent=2))
+
+
 # ---------------------------------------------------------------- commands
 
 def shown_specials() -> set[str]:
@@ -443,12 +802,31 @@ def main(argv: list[str]) -> None:
         cmd_list()
     elif command == "toggle" and len(argv) == 3:
         toggle(argv[2])
+    elif command == "show" and len(argv) == 3:
+        show(argv[2])
+    elif command == "hide" and len(argv) == 3:
+        hide(argv[2])
     elif command == "geometry" and len(argv) == 3:
         cmd_geometry(argv[2])
-    elif command == "state-path":
-        print(STATE_PATH)
     elif command == "shown":
         print(json.dumps(sorted(shown_specials())))
+    elif command == "apply":
+        apply()
+    elif command == "delete" and len(argv) >= 3:
+        delete(argv[2], "--keep" in argv)
+    elif command == "adopt" and len(argv) >= 3:
+        name = None
+        if "--name" in argv and argv.index("--name") + 1 < len(argv):
+            name = argv[argv.index("--name") + 1]
+        adopt(argv[2], name)
+    elif command == "install":
+        install()
+    elif command == "uninstall":
+        uninstall("--purge" in argv)
+    elif command == "conflicts" and len(argv) == 3:
+        cmd_conflicts(argv[2])
+    elif command == "state-path":
+        print(STATE_PATH)
     elif command == "version":
         print(VERSION)
     else:

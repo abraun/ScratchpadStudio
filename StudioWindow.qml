@@ -94,9 +94,9 @@ FloatingWindow {
 
       onToggleRequested: function(card) { hostWidget && hostWidget.toggleScratchpad(card) }
       onEditRequested: function(card) { console.warn("wizard lands in milestone c:", card.id) }
-      onDeleteRequested: function(card) { console.warn("delete lands in milestone b:", card.id) }
+      onDeleteRequested: function(card) { hostWidget && hostWidget.deleteScratchpad(card) }
       onDuplicateRequested: function(card) { console.warn("duplicate lands in milestone c:", card.id) }
-      onAdoptRequested: function(card) { console.warn("adopt lands in milestone b:", card.id) }
+      onAdoptRequested: function(card) { hostWidget && hostWidget.helper(["adopt", card.id]) }
       onNewRequested: hostWidget && hostWidget.newScratchpad()
     }
   }

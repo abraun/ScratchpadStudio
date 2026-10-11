@@ -120,6 +120,13 @@ Panel {
     helper(["toggle", card.id])
   }
 
+  function deleteScratchpad(card) {
+    deleteTarget = card
+    deleteDialog.opened = true
+  }
+
+  property var deleteTarget: null
+
   function newScratchpad() {
     console.warn("scratchpad-studio: wizard lands in milestone c")
   }
@@ -249,9 +256,9 @@ Panel {
 
             onToggleRequested: function(card) { root.toggleScratchpad(card) }
             onEditRequested: function(card) { console.warn("scratchpad-studio: wizard lands in milestone c:", card.id) }
-            onDeleteRequested: function(card) { console.warn("scratchpad-studio: delete lands in milestone b:", card.id) }
+            onDeleteRequested: function(card) { root.deleteScratchpad(card) }
             onDuplicateRequested: function(card) { console.warn("scratchpad-studio: duplicate lands in milestone c:", card.id) }
-            onAdoptRequested: function(card) { console.warn("scratchpad-studio: adopt lands in milestone b:", card.id) }
+            onAdoptRequested: function(card) { root.helper(["adopt", card.id]) }
             onNewRequested: root.newScratchpad()
           }
         }
@@ -266,6 +273,21 @@ Panel {
     hostWidget: root
     cards: root.cards
     demo: root.demoMode
+  }
+
+  // Deleting never kills windows — the helper moves them out first — but it
+  // removes the keybind and rules, so it deserves an explicit confirm.
+  ConfirmDialog {
+    id: deleteDialog
+    message: root.deleteTarget
+      ? qsTr("Delete “%1”? Its windows move to the current workspace and stay open.").arg(root.deleteTarget.name)
+      : ""
+    confirmText: qsTr("Delete")
+    onConfirmed: {
+      if (root.deleteTarget) root.helper(["delete", root.deleteTarget.id])
+      root.deleteTarget = null
+    }
+    onCanceled: root.deleteTarget = null
   }
 
   // ---------------- IPC ----------------
