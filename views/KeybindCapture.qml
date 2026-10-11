@@ -33,13 +33,21 @@ Item {
   // after the first capture (re-opening the editor showed a stale chord).
   // shownChord prefers the live value; a real external chord change wins.
   property string liveChord: ""
-  onChordChanged: liveChord = ""
+  onChordChanged: {
+    liveChord = ""
+    // Re-check when the host's chord settles (opening a scratchpad while
+    // another one was edited before used to run the check with the stale
+    // chord and flag a conflict that was never typed).
+    if (root.chord !== "") checkConflicts(root.chord)
+    else conflictText = ""
+  }
   readonly property string shownChord: liveChord !== "" ? liveChord : chord
   // Modifiers currently held while capturing, in press order — the live
   // "SUPER + SHIFT + …" display. Key RELEASES remove them again so the
   // display tracks the fingers, not history.
   property var heldMods: []
   property string captureHint: ""
+  property int checkProcSerial: 0
   property string conflictText: ""
   property bool conflictIsOmarchy: false
   property bool conflictIsOtherScratchpad: false
@@ -92,6 +100,11 @@ Item {
   }
 
   function checkConflicts(chord) {
+    // Serial-stamped: only the newest check may write the banner. Opening
+    // scratchpad B right after editing scratchpad A fires two checks
+    // (stale chord, then settled chord) — the stale result must lose.
+    checkProcSerial++
+    conflictProc.runSerial = checkProcSerial
     conflictProc.chordArg = chord
     conflictProc.running = true
   }
@@ -175,6 +188,7 @@ Item {
   Process {
     id: conflictProc
     property string chordArg: ""
+    property int runSerial: 0
     command: {
       var base = decodeURIComponent(Qt.resolvedUrl("../bin/scratchpad-studio").toString()
         .replace(/^file:\/\//, ""))
@@ -184,6 +198,8 @@ Item {
     }
     stdout: StdioCollector {
       onStreamFinished: {
+        // A newer check (or a cleared state) supersedes this result.
+        if (conflictProc.runSerial !== root.checkProcSerial) return
         try {
           var result = JSON.parse(text)
           // State is the authority for scratchpad chords — live binds can
