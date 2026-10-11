@@ -25,6 +25,12 @@ FloatingWindow {
   minimumSize: Qt.size(720, 480)
   visible: false
 
+  // The editor draft of THIS surface, for the widget's IPC inspection
+  // (verification and screenshots).
+  readonly property var editorDraft: winEditor.draft
+
+
+
   // Subtle theme-consistent depth behind the content.
   Rectangle {
     anchors.fill: parent
@@ -74,11 +80,11 @@ FloatingWindow {
 
         Button {
           anchors.verticalCenter: parent.verticalCenter
-          text: hostWidget && hostWidget.wizardMode ? qsTr("Back to overview") : qsTr("New scratchpad")
-          iconText: hostWidget && hostWidget.wizardMode ? "󰁙" : "󰐗"
+          text: hostWidget && hostWidget.detail !== "" ? qsTr("Back to overview") : qsTr("New scratchpad")
+          iconText: hostWidget && hostWidget.detail !== "" ? "󰁙" : "󰐗"
           fontSize: Style.font.bodySmall
           onClicked: {
-            if (hostWidget) hostWidget.wizardMode ? hostWidget.closeWizard() : hostWidget.newScratchpad()
+            if (hostWidget) hostWidget.detail !== "" ? hostWidget.closeDetail() : hostWidget.newScratchpad()
           }
         }
       }
@@ -86,7 +92,7 @@ FloatingWindow {
 
     Rectangle { width: parent.width; height: 1; color: Color.popups.border; opacity: 0.6 }
 
-    // ---------- content: overview or wizard (mirrors the panel) ----------
+    // ---------- content: overview, wizard, or editor (mirrors the panel) ----------
     Item {
       width: parent.width
       height: parent.height - Style.space(32) - Style.space(10) - 2 - Style.space(10)
@@ -94,7 +100,7 @@ FloatingWindow {
       Overview {
         id: overview
         anchors.fill: parent
-        visible: !(hostWidget && hostWidget.wizardMode)
+        visible: !(hostWidget && hostWidget.detail !== "")
         cards: root.cards
         demo: root.demo
 
@@ -107,17 +113,33 @@ FloatingWindow {
       }
 
       Wizard {
+        visible: hostWidget && hostWidget.detail === "wizard"
         anchors.fill: parent
-        visible: hostWidget && hostWidget.wizardMode
         editScratchpad: hostWidget ? hostWidget.wizardScratchpad : null
+        duplicate: hostWidget ? hostWidget.wizardDuplicate : false
         demo: root.demo
         monitor: {
           var m = Hyprland.focusedMonitor
           return m ? { width: m.width || 0, height: m.height || 0, scale: m.scale || 1, name: m.name || "" } : null
         }
 
-        onFinished: function(sp) { hostWidget && hostWidget.closeWizard() }
-        onCanceled: hostWidget && hostWidget.closeWizard()
+        onFinished: function(sp) { hostWidget && hostWidget.closeDetail() }
+        onCanceled: hostWidget && hostWidget.closeDetail()
+      }
+
+      Editor {
+        id: winEditor
+        visible: hostWidget && hostWidget.detail === "editor"
+        anchors.fill: parent
+        editScratchpad: hostWidget ? hostWidget.editorScratchpad : null
+        demo: root.demo
+        monitor: {
+          var em = Hyprland.focusedMonitor
+          return em ? { width: em.width || 0, height: em.height || 0, scale: em.scale || 1, name: em.name || "" } : null
+        }
+
+        onSaved: function(sp) { hostWidget && hostWidget.closeDetail() }
+        onCanceled: hostWidget && hostWidget.closeDetail()
       }
     }
   }

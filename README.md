@@ -18,9 +18,19 @@ Browsing, AI, music — one chord each.
   dot (shown / hidden / empty), and a live, to-scale schematic of the real
   window rectangles inside it, with app icons. Existing `special:*`
   workspaces you already had show up too and can be adopted.
+- **Visual layout editor** — click Edit on any scratchpad and get its
+  windows drawn in their saved arrangement on a monitor-true canvas.
+  Drag a card onto another slot to rearrange (or Ctrl+←/→ with the
+  keyboard), Del removes an app, **Add app** reuses the wizard's picker
+  (installed apps, running windows, custom command/URL), and the keybind
+  is re-captured right there — Ctrl+K, press a chord, done. Saving swaps
+  the old `o.bind()` line for the new one wholesale (no orphan binds) and
+  reflows already-open windows onto their new slots, live. Windows can be
+  arranged in slots or set to float freely.
 - **Six-step wizard** — name & icon; apps picked from installed apps,
   currently-running windows, or a custom command/URL (web apps open as
-  `chromium --app` windows with the right class); layout thumbnails
+  `chromium --app` windows with the right class); window placement
+  (arranged in slots or floating), layout thumbnails
   (single / pair / stacked / three-up / grid) with size, anchor and margin;
   slide-in direction with an animated preview; press-to-capture keybind
   with live conflict detection and free-chord suggestions; review with a
@@ -31,6 +41,8 @@ Browsing, AI, music — one chord each.
 |---|---|
 | ![Apps](screenshots/wizard-apps.png) | ![Layout](screenshots/wizard-layout.png) |
 | ![Keybind](screenshots/wizard-keybind.png) | ![Summary](screenshots/wizard-summary.png) |
+
+![Editing](screenshots/editor.png)
 
 - **Two surfaces** — the panel from the bar icon, and a resizable app
   window (right-click the bar icon, `ipc call scratchpad-studio window`,
@@ -61,7 +73,13 @@ Scratchpad Studio manages **named special workspaces** natively:
 - Each scratchpad's apps get Hyprland window rules that route their window
   class into `special:<name>` silently, floating, with pixel geometry
   baked from your monitor (window-rule `size`/`move` ignore percentages —
-  verified on Hyprland 0.56.2).
+  verified on Hyprland 0.56.2). Scratchpads set to **floating** placement
+  skip the size/move rules: windows open at their own size and stay where
+  you put them.
+- Editing is not config-only: `upsert` reflows windows that are already
+  open onto their new slots (float → resize → move, works even while the
+  scratchpad is hidden), and removing an app relocates its live windows to
+  your current workspace — nothing is ever closed or killed.
 - Its chord runs `scratchpad-studio toggle <name>`: any app whose class
   isn't already on the scratchpad's workspace is launched (rules route it
   in), then the special workspace is revealed. Single-instance apps
@@ -69,7 +87,9 @@ Scratchpad Studio manages **named special workspaces** natively:
   launchers that exit immediately still work; web apps match their
   `chrome-<host>__-Default` class.
 - Keybinds are `o.bind()` lines in the generated file, included from a
-  clearly-marked managed block in `bindings.lua`.
+  clearly-marked managed block in `bindings.lua`. The file is regenerated
+  from state on every save, so a changed chord replaces the old line —
+  there are no orphan binds.
 
 pyprland was evaluated first and rejected: it is not packaged for stock
 Omarchy, and its `hyprctl dispatch <string>` control surface fails under
@@ -110,7 +130,9 @@ closed. Add `--purge` to also delete the state file and backups.
 ## Development
 
 ```sh
-python3 -m unittest discover -s tests   # geometry, generation, conflicts, catalogue
+python3 -m unittest discover -s tests   # geometry, generation, conflicts,
+                                         # catalogue, editing (placement,
+                                         # reflow, bind replacement)
 ```
 
 `bin/scratchpad-studio` (Python stdlib, no deps) is the engine;

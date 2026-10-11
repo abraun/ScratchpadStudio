@@ -17,6 +17,7 @@ Item {
   id: root
 
   required property var editScratchpad     // null = create; object = edit
+  property bool duplicate: false          // editScratchpad is an unsaved copy
   property bool demo: false
   property var monitor: null               // {width, height, scale} for previews
 
@@ -32,6 +33,7 @@ Item {
     anchor: "top",
     layout: "single",
     transition: "down",
+    placement: "slots",
     sizePct: { w: 60, h: 50 },
     marginPx: 12,
     apps: []
@@ -46,6 +48,14 @@ Item {
   Component.onCompleted: {
     if (editScratchpad) draft = JSON.parse(JSON.stringify(editScratchpad))
     forceActiveFocus()
+  }
+
+  // Surfaces are constructed before any edit begins; re-copy when the
+  // target changes (also covers duplicate -> edit switches).
+  onEditScratchpadChanged: {
+    if (editScratchpad) draft = JSON.parse(JSON.stringify(editScratchpad))
+    step = 0
+    tested = false
   }
 
   // Re-assign the draft so var-property bindings (previews, summaries)
@@ -87,9 +97,10 @@ Item {
 
   function cancel() {
     // "Test it now" writes the draft for real; canceling afterwards restores
-    // what was there before the wizard opened.
+    // what was there before the wizard opened. A duplicate (or any draft
+    // that did not exist in state yet) is deleted again, not re-saved.
     if (tested) {
-      if (original) runHelper("upsert", JSON.stringify(original))
+      if (original && !duplicate) runHelper("upsert", JSON.stringify(original))
       else if (draft.id) runHelper(["delete", draft.id])
     }
     canceled()
@@ -189,6 +200,8 @@ Item {
       KeybindStep {
         id: keybindStepItem
         draft: root.draft
+        selfId: root.editScratchpad ? root.editScratchpad.id : ""
+        selfName: root.editScratchpad ? root.editScratchpad.name : ""
         onTouched: root.touch()
         // The step sees raw chords only while it holds focus; grab it when
         // it becomes current so capture works without a click.

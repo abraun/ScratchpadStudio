@@ -56,6 +56,24 @@ changes and regenerates automatically. Documented in the README.
 - **Apply flow**: write state JSON → regenerate `scratchpad-studio.lua` →
   `hyprctl reload` → check `hyprctl configerrors` (non-empty ⇒ restore
   backup, report). Live `hyprctl eval` rules are never used for persistence.
+- **Edit flow (`upsert`, what the editor saves through)**: merge the
+  scratchpad into state → the apply flow → relocate → reflow.
+  - *Relocate*: apps removed from the scratchpad get their live windows
+    moved to the current workspace (same never-kill rule as delete —
+    parking them on a now-unmanaged special would be confusing).
+  - *Reflow*: window rules only fire at map time, so windows already
+    open keep stale geometry after an edit. `reflow` floats any tiled
+    window on the special (restoring the state our own rules intend),
+    resizes (`window.resize {x=width, y=height}` — center-anchored, so
+    resize first), then moves (`window.move {x,y}` absolute). Verified
+    live to work on hidden specials; the next reveal shows the new
+    arrangement. Floating placement pins nothing — the point of it.
+- **Keybind replacement**: binds live only in the generated file, which
+  is fully rewritten from state on every apply — a changed chord
+  replaces the old `o.bind` line and the reload drops the old bind. No
+  orphans. `conflicts-json --self <id>` filters the scratchpad's own
+  live bind, so re-capturing the same chord while editing is not a
+  self-conflict; another scratchpad's chord is a loud warning.
 - **Toggle flow** (`bin/scratchpad-studio toggle <id>`):
   if the special workspace is currently visible → hide it; else launch any
   configured apps whose window class is absent from `hyprctl -j clients`
@@ -85,6 +103,7 @@ changes and regenerates automatically. Documented in the README.
       "marginPx": 12,
       "layout": "single",               // single|pair|stacked|three-up|grid
       "transition": "down",             // slide-in direction: down|up|right|left
+      "placement": "slots",             // slots (baked geometry) | floating
       "apps": [
         {
           "name": "Cider",
@@ -111,17 +130,20 @@ be toggled but is never rewritten by us.
 manifest.json            kinds: bar-widget; entryPoints.barWidget: BarWidget.qml
 BarWidget.qml            bar icon + PopupCard panel host + FloatingWindow host + IPC
 StudioWindow.qml         resizable app-window surface (same views)
-views/                   Overview.qml, Wizard.qml, ScratchpadCard.qml, AppPicker.qml,
-                         LayoutPicker.qml, TransitionPicker.qml, KeybindCapture.qml,
-                         ConfirmDelete.qml, EmptyState.qml
-lib/                     State.js  (load/watch/apply JSON, call helper)
-                         Live.js   (hyprctl clients/workspaces/monitors/bind polling)
+views/                   Overview.qml, Wizard.qml, Editor.qml, ScratchpadCard.qml,
+                         Schematic.qml, AppPickerList.qml (shared picker),
+                         KeybindCapture.qml (shared chord capture),
+                         LayoutThumbRow.qml (shared placement+layout picker),
+                         EmptyState.qml
+views/wizard/            the create wizard's steps
+lib/                     StudioState.js  (state shape, normalization, demo data)
+                         LiveModel.js   (hyprctl clients/workspaces/monitors/bind polling)
                          Layout.js (pure geometry math, shared with tests)
-                         Demo.js   (fake data for screenshots/demos)
-bin/scratchpad-studio    Python 3 CLI: toggle|apply|regenerate|install|uninstall|
-                         conflicts|import|adopt|list  (stdlib only)
+bin/scratchpad-studio    Python 3 CLI: toggle|apply|reflow|upsert|delete|adopt|
+                         install|uninstall|conflicts(--self)|apps|...  (stdlib only)
 tests/                   test_geometry.py, test_generate.py, test_conflicts.py,
-                         test_managed_block.py  (unittest, no network)
+                         test_apps.py, test_edit.py (placement, reflow planning,
+                         app-removal, keybind replacement)  (unittest, no network)
 docs/design.md           this file
 screenshots/             README shots, demo mode only
 ```
@@ -153,22 +175,36 @@ Installed footprint (all created by `omarchy plugin add` + first run):
   `Quickshell.iconPath`); screencopy of hidden windows is impossible, so
   schematics are the honest preview. Actions: toggle, edit, duplicate,
   delete. Foreign specials show an "Adopt" affordance instead of edit.
-- **Wizard** (new/edit, 5 steps, keyboard-first, Esc = back):
+- **Wizard** (new scratchpads and duplicates, 6 steps, keyboard-first,
+  Esc = back):
   1. Name + icon (glyph field with suggestions).
   2. Apps: search installed `.desktop` entries, pick a live window
      (auto-fills class from `hyprctl clients`), or custom command/URL.
      Single-instance and web-app detection sets `class`/`singleInstance`
      automatically (known-apps table + `--app=` heuristics).
-  3. Layout: thumbnails (single / pair / stacked / three-up / grid) +
-     anchor + size sliders (percent) + margin.
+  3. Placement (arranged in slots / floating) + layout thumbnails
+     (single / pair / stacked / three-up / grid) + anchor + size sliders
+     (percent) + margin; the slot controls hide for floating.
   4. Transition: from-top/bottom/left/right with a small motion preview
      (the reveal itself follows Hyprland's specialWorkspace animation;
      the choice drives window `animation` rule + anchor defaults).
-  5. Keybind: press-to-capture (PanelKeyCatcher), live conflict check
-     against `hyprctl -j binds` **and** textual scan of `~/.config/hypr/`
+  5. Keybind: press-to-capture, live conflict check against
+     `hyprctl -j binds` **and** textual scan of `~/.config/hypr/`
      `o.bind(`/`hl.bind(` lines; suggested free chords (e.g. SUPER+M…);
-     Omarchy-default collisions get a loud warning. Summary + "Test it
-     now" (applies temporarily, toggles the real scratchpad, undo).
+     Omarchy-default collisions get a loud warning.
+  6. Summary + "Test it now" (applies for real, toggles the scratchpad,
+     cancel restores the pre-test state).
+- **Editor** (edit mode — one screen, not a wizard replay): the
+  scratchpad's windows drawn in their saved arrangement on a
+  monitor-true canvas; drag a card onto another slot to rearrange
+  (Ctrl+←/→ by keyboard; single/stacked layouts cascade their cards so
+  overlaid slots stay editable), Del removes the selected app, Ctrl+A /
+  **Add app** opens the shared picker overlay, a corner handle resizes
+  the frame (sizePct), and the keybind is re-captured in place (Ctrl+K;
+  the scratchpad's own chord is excluded from conflict detection while
+  editing). Anchor, slide-in, placement and name/icon round it out;
+  Ctrl+Enter saves through `upsert` (regenerate → relocate → reflow),
+  Esc cancels — restoring the pre-test state if "Test it now" ran.
 - **Theming**: `qs.Commons` `Color`/`Style` singletons — palette from
   `~/.local/state/omarchy/current/theme/colors.toml` via the shell; spacing
   via `Style.space()`; the shell re-reads on theme change, so the plugin
@@ -193,3 +229,6 @@ c. Wizard: app picker, layout, transition, summary, test-it-now
 d. Keybind capture + conflict detection + managed block writes
 e. Polish (keyboard nav, focus rings, empty states), tests, README,
    uninstall
+f. Visual layout editor (edit mode): drag/keyboard rearrange, add/remove
+   apps, in-place rebinding, placement option (slots/floating), reflow +
+   relocation engine, self-aware conflict detection

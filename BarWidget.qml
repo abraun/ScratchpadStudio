@@ -142,14 +142,18 @@ Panel {
 
   function newScratchpad() {
     wizardScratchpad = null
-    wizardMode = true
+    wizardDuplicate = false
+    detail = "wizard"
   }
 
   function editScratchpad(card) {
     var sp = findStateScratchpad(card.id)
     if (!sp) return
-    wizardScratchpad = sp
-    wizardMode = true
+    // Null-first so re-entering the editor for the same scratchpad
+    // re-arms selection/tested state (same object identity would not).
+    editorScratchpad = null
+    editorScratchpad = sp
+    detail = "editor"
   }
 
   function findStateScratchpad(id) {
@@ -168,16 +172,23 @@ Panel {
     copy.name = copy.name + " copy"
     copy.keybind = ""
     wizardScratchpad = copy
-    wizardMode = true
+    wizardDuplicate = true
+    detail = "wizard"
   }
 
-  function closeWizard() {
-    wizardMode = false
+  function closeDetail() {
+    detail = ""
     wizardScratchpad = null
+    editorScratchpad = null
+    wizardDuplicate = false
   }
 
-  property bool wizardMode: false
+  // Which full-screen flow owns the panel/window content:
+  // "" overview, "wizard" create/duplicate, "editor" edit.
+  property string detail: ""
   property var wizardScratchpad: null
+  property bool wizardDuplicate: false
+  property var editorScratchpad: null
   readonly property var monitorInfo: {
     var m = Hyprland.focusedMonitor
     return m ? { width: m.width || 0, height: m.height || 0, scale: m.scale || 1, name: m.name || "" } : null
@@ -213,15 +224,15 @@ Panel {
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(936))
     contentHeight: panel.fittedContentHeight(
-      headerRow.height + (wizard.visible ? Style.space(430) : overview.contentHeightNeeded())
+      headerRow.height + (detail !== "" ? Style.space(600) : overview.contentHeightNeeded())
       + Style.space(10), Style.space(680))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      // The wizard owns the keyboard while it is open: its TextFields eat
-      // typing and its capture mode needs raw chords (arrows included).
-      blocked: root.wizardMode
+      // The wizard/editor own the keyboard while open: their TextFields
+      // eat typing and chord capture needs raw keys (arrows included).
+      blocked: root.detail !== ""
 
       onMoveRequested: function(dx, dy) { overview.moveCursor(dx, dy) }
       onActivateRequested: overview.activate()
@@ -292,23 +303,24 @@ Panel {
 
               Button {
                 anchors.verticalCenter: parent.verticalCenter
-                text: qsTr("New")
-                iconText: "󰐗"
+                text: root.detail !== "" ? qsTr("Back to overview") : qsTr("New")
+                iconText: root.detail !== "" ? "󰁙" : "󰐗"
                 fontSize: Style.font.bodySmall
-                onClicked: root.newScratchpad()
+                onClicked: root.detail !== "" ? root.closeDetail() : root.newScratchpad()
               }
             }
           }
 
-          // ---------- content: overview or wizard ----------
+          // ---------- content: overview, wizard (create), or editor ----------
           Item {
             width: panelFlick.width
             height: Math.max(overview.visible ? overview.contentHeightNeeded() : 0,
-                             wizard.visible ? Style.space(430) : 0)
+                             wizard.visible ? Style.space(600) : 0,
+                             editor.visible ? Style.space(600) : 0)
 
             Overview {
               id: overview
-              visible: !root.wizardMode
+              visible: root.detail === ""
               anchors.fill: parent
               cards: root.cards
               demo: root.demoMode
@@ -329,14 +341,27 @@ Panel {
 
             Wizard {
               id: wizard
-              visible: root.wizardMode
+              visible: root.detail === "wizard"
               anchors.fill: parent
               editScratchpad: root.wizardScratchpad
+              duplicate: root.wizardDuplicate
               demo: root.demoMode
               monitor: root.monitorInfo
 
-              onFinished: function(sp) { root.closeWizard() }
-              onCanceled: root.closeWizard()
+              onFinished: function(sp) { root.closeDetail() }
+              onCanceled: root.closeDetail()
+            }
+
+            Editor {
+              id: editor
+              visible: root.detail === "editor"
+              anchors.fill: parent
+              editScratchpad: root.editorScratchpad
+              demo: root.demoMode
+              monitor: root.monitorInfo
+
+              onSaved: function(sp) { root.closeDetail() }
+              onCanceled: root.closeDetail()
             }
           }
         }
@@ -379,11 +404,22 @@ Panel {
     function window(): string { root.openWindow(); return "ok" }
     function startWizard(): void { root.open(); Qt.callLater(root.newScratchpad) }
     function wizardStep(n: int): void { wizard.step = n; wizard.forceActiveFocus() }
+    // Open the visual editor for one scratchpad (works in demo mode too).
+    function edit(id: string): string {
+      var sp = root.findStateScratchpad(id)
+      if (!sp) return "no such scratchpad: " + id
+      root.editorScratchpad = null
+      root.editorScratchpad = sp
+      root.detail = "editor"
+      root.open()
+      return "editing " + id
+    }
     function demo(mode: string): void {
       root.demoMode = String(mode) === "on" || String(mode) === "true"
     }
     function status(): string {
-      return "v3 demo=" + root.demoMode + " scratchpads=" + root.cards.length
+      return "v" + "0.2.0" + " demo=" + root.demoMode + " scratchpads=" + root.cards.length
+        + " detail=" + root.detail
         + " helper=" + (root.helperPath.length > 0 ? "ok" : "?")
     }
     function inspect(): string {
@@ -394,10 +430,27 @@ Panel {
         if (name.indexOf("special:") === 0)
           specials.push({ name: name, active: items[i].active === true, id: items[i].id })
       }
+      var editorInfo = null
+      // The app window and the panel each hold a draft; report whichever
+      // surface holds data (window first — it is the one IPC flows drive).
+      var draft = studioWindow.editorDraft || (editor.visible ? editor.draft : null)
+      if (root.detail === "editor" && draft) {
+        editorInfo = {
+          id: draft.id,
+          name: draft.name,
+          placement: draft.placement,
+          layout: draft.layout,
+          anchor: draft.anchor,
+          keybind: draft.keybind,
+          apps: draft.apps.map(function (a) { return a.name })
+        }
+      }
       return JSON.stringify({
         cursor: overview.cursor,
         columns: overview.columns,
         rows: overview.rows,
+        detail: root.detail,
+        editor: editorInfo,
         names: root.cards.map(function (c) { return c.id + ":" + c.status }),
         focusedWorkspace: Hyprland.focusedWorkspace ? String(Hyprland.focusedWorkspace.name || "") : "",
         specials: specials

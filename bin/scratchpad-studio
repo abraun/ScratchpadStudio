@@ -14,6 +14,7 @@ Usage: scratchpad-studio <command> [args]
   geometry <id>           print computed window rects (debug)
   shown                   print revealed special ids as JSON
   apply                   regenerate Hyprland config from state + reload
+  reflow <id>             move live scratchpad windows to their slot rects
   delete <id> [--keep]    remove scratchpad (windows move to current ws)
   adopt <id> [--name N]   take over an existing special workspace
   install / uninstall     wire in / cleanly remove the managed config
@@ -45,11 +46,15 @@ BLOCK_END = "-- <<< scratchpad-studio (managed) <<<"
 BLOCK_LINES = [BLOCK_BEGIN, 'require("hypr.scratchpad-studio")', BLOCK_END]
 
 GAP_MIN_PX = 6
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 ANCHORS = ("top", "bottom", "left", "right")
 LAYOUTS = ("single", "pair", "stacked", "three-up", "grid")
 TRANSITIONS = ("down", "up", "right", "left")
+# Windows either open arranged in the configured slot geometry ("slots",
+# float + baked pixel rules — the default since v0.1) or free-floating
+# ("floating": float, no size/move rules, the window keeps its own size).
+PLACEMENTS = ("slots", "floating")
 
 # Apps known to be single-instance: the launcher process exits immediately
 # and the real window maps later, so PID/process tracking always lies. For
@@ -164,20 +169,31 @@ def cmd_apps() -> None:
 
 
 def cmd_upsert() -> None:
-    """Merge one scratchpad (JSON on stdin) into state, save, apply."""
+    """Merge one scratchpad (JSON on stdin) into state, save, apply.
+
+    Editing is this command: apps that were removed get their live windows
+    relocated to the current workspace (never killed), and windows already
+    open on the scratchpad are reflowed onto their new slots — otherwise
+    window rules (which only fire at map time) would leave stale geometry
+    on screen until every app was restarted."""
     try:
         raw = json.loads(sys.stdin.read())
     except json.JSONDecodeError as error:
         die(f"stdin is not valid JSON: {error}")
     sp = normalize_sp(raw)
     state = load_state()
+    old = find_sp(state, sp["id"])
+    gone = removed_classes(old, sp) if old else []
     kept = [s for s in state["scratchpads"] if s["id"] != sp["id"]]
     kept.append(sp)
     kept.sort(key=lambda s: s["name"].lower())
     state["scratchpads"] = kept
     save_state(state)
     apply(quiet=True)
-    print(json.dumps({"id": sp["id"]}))
+    for cls in gone:
+        move_class_out(sp["id"], cls)
+    reflow(sp["id"], quiet=True)
+    print(json.dumps({"id": sp["id"], "removedApps": gone}))
 
 
 def die(message: str, code: int = 1) -> None:
@@ -250,6 +266,7 @@ def normalize_app(app: dict) -> dict:
 def normalize_sp(sp: dict) -> dict:
     size = sp.get("sizePct") or {}
     anchor = sp.get("anchor") if sp.get("anchor") in ANCHORS else "top"
+    placement = sp.get("placement") if sp.get("placement") in PLACEMENTS else "slots"
     return {
         "id": slug(sp.get("id") or sp.get("name") or "scratchpad"),
         "name": str(sp.get("name") or "Scratchpad"),
@@ -258,6 +275,7 @@ def normalize_sp(sp: dict) -> dict:
         "anchor": anchor,
         "layout": sp.get("layout") if sp.get("layout") in LAYOUTS else "single",
         "transition": sp.get("transition") if sp.get("transition") in TRANSITIONS else "down",
+        "placement": placement,
         "sizePct": {
             "w": clamp(size.get("w", 60), 30, 95),
             "h": clamp(size.get("h", 50), 25, 95),
@@ -316,6 +334,15 @@ def find_sp(state: dict, sp_id: str) -> dict | None:
     for sp in state["scratchpads"]:
         if sp["id"] == sp_id:
             return sp
+    return None
+
+
+def flag_value(argv: list[str], flag: str) -> str | None:
+    """Value following a --flag, or None."""
+    if flag in argv:
+        i = argv.index(flag)
+        if i + 1 < len(argv):
+            return argv[i + 1]
     return None
 
 
@@ -436,26 +463,38 @@ def layout_rects(sp: dict, usable: tuple[int, int]) -> list[tuple[int, int, int,
 
 # ---------------------------------------------------------------- engine
 
+def window_rule_body(sp: dict, app: dict, rect: tuple[int, int, int, int] | None,
+                      monitor_name: str) -> str:
+    """Rule body shared by runtime rules and generated config. `rect` is
+    the app's slot geometry; None (floating placement) omits size/move so
+    the window floats at its own size instead of a baked slot."""
+    body = f'workspace = "special:{sp["id"]} silent", float = true'
+    if rect is not None:
+        body += f', size = "{rect[2]} {rect[3]}", move = "{rect[0]} {rect[1]}"'
+        if monitor_name:
+            body += f', monitor = "{monitor_name}"'
+    style = {"down": "slide", "up": "slide", "right": "slide", "left": "slide"}.get(sp["transition"])
+    if style:
+        body += f", animation = {lua_quote(style)}"
+    return body
+
+
 def runtime_rules(sp: dict, monitor: dict) -> list[str]:
     """Lua hl.window_rule() snippets routing each app class into the hidden
-    special workspace with its computed geometry. Runtime rules vanish on
-    reload; milestone b persists the same rules via generated config."""
-    usable = usable_area(monitor)
-    rects = layout_rects(sp, usable)
+    special workspace. Slots placement pins pixel geometry (baked from the
+    monitor — rules ignore percentages); floating lets the window size
+    itself. Runtime rules vanish on reload; `apply` persists the same rules
+    via generated config."""
     monitor_name = monitor.get("name", "")
     snippets = []
-    for app, rect in zip(sp["apps"], rects):
+    rects = layout_rects(sp, usable_area(monitor)) if sp["placement"] == "slots" else None
+    for app, rect in zip(sp["apps"], rects or [None] * len(sp["apps"])):
         if not app["class"]:
             continue
         match = f'class = "{app["class"]}"'
-        body = (
-            f'workspace = "special:{sp["id"]} silent"'
-            f', float = true, size = "{rect[2]} {rect[3]}"'
-            f', move = "{rect[0]} {rect[1]}"'
+        snippets.append(
+            f"hl.window_rule({{ match = {{ {match} }}, {window_rule_body(sp, app, rect, monitor_name)} }})"
         )
-        if monitor_name:
-            body += f', monitor = "{monitor_name}"'
-        snippets.append(f"hl.window_rule({{ match = {{ {match} }}, {body} }})")
     return snippets
 
 
@@ -574,18 +613,14 @@ def generate_lua(state: dict, helper_path: str, monitor: dict) -> str:
         lines.append("")
     for sp in state["scratchpads"]:
         lines.append(f"-- {sp['name']} ({sp['id']})")
-        rects = layout_rects(sp, usable)
-        for app, rect in zip(sp["apps"], rects):
+        rects = layout_rects(sp, usable) if sp["placement"] == "slots" else None
+        for app, rect in zip(sp["apps"], rects or [None] * len(sp["apps"])):
             if not app["class"]:
                 continue
-            rules = [f'workspace = "special:{sp["id"]} silent"', "float = true",
-                     f'size = "{rect[2]} {rect[3]}"', f'move = "{rect[0]} {rect[1]}"']
-            if monitor_name:
-                rules.append(f'monitor = {lua_quote(monitor_name)}')
-            style = {"down": "slide", "up": "slide", "right": "slide", "left": "slide"}.get(sp["transition"])
-            if style:
-                rules.append(f"animation = {lua_quote(style)}")
-            lines.append(f"o.window({{ class = {lua_quote(app['class'])} }}, {{ {', '.join(rules)} }})")
+            lines.append(
+                f"o.window({{ class = {lua_quote(app['class'])} }}, "
+                f"{{ {window_rule_body(sp, app, rect, monitor_name)} }})"
+            )
         if sp["keybind"]:
             command = f"{helper_path} toggle {sp['id']}"
             lines.append(
@@ -719,6 +754,140 @@ def move_windows_out(sp_id: str) -> int:
         )
         moved += 1
     return moved
+
+
+def move_class_out(sp_id: str, cls: str) -> int:
+    """Move only the windows of one class off the special to the current
+    workspace. Used when an app is removed from a scratchpad: the rule for
+    its class is gone after the next apply, so leaving the window parked on
+    the (now foreign) special would be confusing. Same never-kill rule as
+    delete: the window stays open, just on the user's workspace."""
+    name = f"special:{sp_id}"
+    active = hyprctl_json(["activeworkspace"])
+    target_ws = str(active.get("name") or "")
+    if target_ws == "" or target_ws.startswith("special:"):
+        target_ws = str(active.get("id") or "1")
+    moved = 0
+    for client in clients():
+        if str(client.get("workspace", {}).get("name") or "") != name:
+            continue
+        if str(client.get("class") or "") != cls:
+            continue
+        address = client.get("address")
+        if not address:
+            continue
+        dispatch_lua(
+            f'hl.dsp.window.move({{ window = {lua_quote("address:" + address)}, '
+            f'workspace = {lua_quote(target_ws)}, follow = false }})'
+        )
+        moved += 1
+    return moved
+
+
+def removed_classes(old_sp: dict, new_sp: dict) -> list[str]:
+    """Classes configured on the old scratchpad but gone from the new one —
+    order-preserving; duplicates collapse. Their windows get relocated on
+    save (see move_class_out)."""
+    kept = {a["class"] for a in new_sp["apps"]}
+    out: list[str] = []
+    for app in old_sp["apps"]:
+        cls = app["class"]
+        if cls and cls not in kept and cls not in out:
+            out.append(cls)
+    return out
+
+
+# Pixel dispatch, verified live on Hyprland 0.56.2 (Lua config) with a
+# disposable foot window parked on a hidden special:
+#   hl.dsp.window.move({ window = ..., x = N, y = N })   absolute px move
+#   hl.dsp.window.resize({ window = ..., x = W, y = H })  x/y mean SIZE —
+#     and it is center-anchored, so resize FIRST, then move to the final
+#     corner. Both apply to windows on hidden special workspaces; the next
+#     reveal shows the new geometry (that is what makes edit-while-hidden
+#     reflow work).
+def resize_window_pixels(address: str, w: int, h: int) -> None:
+    dispatch_lua(
+        f'hl.dsp.window.resize({{ window = {lua_quote("address:" + address)}, '
+        f'x = {int(w)}, y = {int(h)} }})'
+    )
+
+
+def move_window_pixels(address: str, x: int, y: int) -> None:
+    dispatch_lua(
+        f'hl.dsp.window.move({{ window = {lua_quote("address:" + address)}, '
+        f'x = {int(x)}, y = {int(y)} }})'
+    )
+
+
+def plan_reflow(sp: dict, usable: tuple[int, int], live_clients: list) -> list:
+    """Which live windows should land in which slot rect: [{address, class,
+    rect}]. Pure so tests can pin it. Floating placement pins nothing (the
+    whole point is that the window keeps its own size and position).
+    Several windows of one class all get their app's slot (a "single"/
+    "stacked" scratchpad overlays them exactly like the rules would)."""
+    if sp["placement"] != "slots":
+        return []
+    special = f"special:{sp['id']}"
+    on_special = [
+        c for c in live_clients
+        if c.get("mapped", True)
+        and str(c.get("workspace", {}).get("name") or "") == special
+    ]
+    rects = layout_rects(sp, usable)
+    class_rects: dict[str, list] = {}
+    for app, rect in zip(sp["apps"], rects):
+        if app["class"]:
+            class_rects.setdefault(app["class"], []).append(rect)
+    plans = []
+    seen: dict[str, int] = {}
+    for client in on_special:
+        cls = str(client.get("class") or "")
+        if cls not in class_rects:
+            continue
+        address = str(client.get("address") or "")
+        if not address:
+            continue
+        i = seen.get(cls, 0)
+        seen[cls] = i + 1
+        plans.append({
+            "address": address,
+            "class": cls,
+            "rect": class_rects[cls][min(i, len(class_rects[cls]) - 1)],
+            # Windows that mapped before a rule applied (or drifted) can be
+            # tiled on the special; pixel moves only reach floating windows
+            # (verified live), so reflow floats them first — which is also
+            # the state the scratchpad's own rules intend.
+            "floating": bool(client.get("floating")),
+        })
+    return plans
+
+
+def float_window(address: str) -> None:
+    dispatch_lua(
+        f'hl.dsp.window.float({{ window = {lua_quote("address:" + address)} }})'
+    )
+
+
+def reflow(sp_id: str, quiet: bool = False) -> None:
+    """Nudge already-open scratchpad windows onto their configured slots.
+    Window rules only fire at map time, so without this an edit to the
+    layout would not affect windows that are already open (verified live).
+    Works while the special is hidden — the next reveal shows the new
+    arrangement."""
+    state = load_state()
+    sp = find_sp(state, sp_id)
+    if sp is None:
+        die(f"unknown scratchpad: {sp_id}")
+    monitor = focused_monitor()
+    plans = plan_reflow(sp, usable_area(monitor), clients())
+    for plan in plans:
+        if not plan["floating"]:
+            float_window(plan["address"])
+        x, y, w, h = plan["rect"]
+        resize_window_pixels(plan["address"], w, h)  # center-anchored: first
+        move_window_pixels(plan["address"], x, y)    # then to the corner
+    if not quiet:
+        print(f"reflowed {len(plans)} window(s) on {sp_id}")
 
 
 def delete(sp_id: str, keep_windows: bool) -> None:
@@ -858,9 +1027,32 @@ def strip_managed(content: str) -> str:
     return before + after
 
 
-def cmd_conflicts(chord: str, as_json: bool = False) -> None:
+def self_bind_match(bind: dict, sp_id: str, sp_name: str) -> bool:
+    """Is this live bind the scratchpad's own chord? Our generated binds run
+    `<helper> toggle <id>` with description `Scratchpad: <name>`; either
+    marker identifies it (the arg is authoritative, the description is the
+    fallback for Hyprland builds that report it differently)."""
+    arg = str(bind.get("arg") or "")
+    if "toggle" in arg and arg.rstrip().endswith(f"toggle {sp_id}"):
+        return True
+    return str(bind.get("description") or "") == f"Scratchpad: {sp_name}"
+
+
+def filter_self_binds(binds: list, sp_id: str, sp_name: str) -> list:
+    return [b for b in binds if not self_bind_match(b, sp_id, sp_name)]
+
+
+def cmd_conflicts(chord: str, as_json: bool = False, self_id: str | None = None) -> None:
     import glob
     binds = hyprctl_json(["-j", "binds"])
+    # Editing a scratchpad must not flag its own current chord: the old
+    # o.bind line is replaced wholesale on save (the generated file is
+    # rewritten from state), so keeping the same chord is not a conflict.
+    if self_id:
+        state = load_state()
+        me = find_sp(state, self_id)
+        if me:
+            binds = filter_self_binds(binds, me["id"], me["name"])
     live = find_bind_conflict(chord, binds)
     files = {}
     for pattern in ("bindings*.lua", "*.lua"):
@@ -954,6 +1146,8 @@ def main(argv: list[str]) -> None:
         print(json.dumps(sorted(shown_specials())))
     elif command == "apply":
         apply()
+    elif command == "reflow" and len(argv) == 3:
+        reflow(argv[2])
     elif command == "delete" and len(argv) >= 3:
         delete(argv[2], "--keep" in argv)
     elif command == "adopt" and len(argv) >= 3:
@@ -965,10 +1159,10 @@ def main(argv: list[str]) -> None:
         install()
     elif command == "uninstall":
         uninstall("--purge" in argv)
-    elif command == "conflicts" and len(argv) == 3:
-        cmd_conflicts(argv[2])
-    elif command == "conflicts-json" and len(argv) == 3:
-        cmd_conflicts(argv[2], as_json=True)
+    elif command == "conflicts" and len(argv) >= 3:
+        cmd_conflicts(argv[2], self_id=flag_value(argv, "--self"))
+    elif command == "conflicts-json" and len(argv) >= 3:
+        cmd_conflicts(argv[2], as_json=True, self_id=flag_value(argv, "--self"))
     elif command == "binds-json":
         cmd_binds_json()
     elif command == "apps":
