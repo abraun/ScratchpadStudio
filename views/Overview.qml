@@ -20,6 +20,7 @@ Item {
   signal duplicateRequested(var card)
   signal deleteRequested(var card)
   signal adoptRequested(var card)
+  signal captureRequested(var card)
   signal newRequested()
   signal closeRequested()
 
@@ -104,6 +105,7 @@ Item {
           onDuplicateRequested: root.duplicateRequested(card)
           onDeleteRequested: root.deleteRequested(card)
           onAdoptRequested: root.adoptRequested(card)
+          onCaptureRequested: root.captureRequested(card)
         }
       }
     }

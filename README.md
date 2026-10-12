@@ -18,20 +18,51 @@ Browsing, AI, music — one chord each.
   dot (shown / hidden / empty), and a live, to-scale schematic of the real
   window rectangles inside it, with app icons. Existing `special:*`
   workspaces you already had show up too and can be adopted.
+- **Visual layout editor** — click Edit on any scratchpad and get its
+  windows drawn in their saved arrangement on a monitor-true canvas.
+  Drag a card onto another's **edge** to split (drag a window to the
+  right and the other fills the left), onto the middle to swap
+  (Ctrl+←/→ works too), Del removes an app, **Add app** reuses the
+  wizard's picker (installed apps, running windows, custom command/URL).
+  Click the size numbers for width/height/margin sliders, or drag the
+  frame's corner handle. The keybind is an editable control — click the
+  chip or Ctrl+K, hold modifiers in any order (they build up live),
+  press the final key, done; a chord that's already taken blocks saving
+  until you pick a free one. Saving swaps the old `o.bind()` line for
+  the new one wholesale (no orphan binds) and reflows already-open
+  windows onto their new slots, live. Windows can be arranged in slots
+  or set to float freely, anchored to any edge or the center (a
+  centered scratchpad pops in).
 - **Six-step wizard** — name & icon; apps picked from installed apps,
   currently-running windows, or a custom command/URL (web apps open as
-  `chromium --app` windows with the right class); layout thumbnails
+  `chromium --app` windows with the right class); window placement
+  (arranged in slots or floating), layout thumbnails
   (single / pair / stacked / three-up / grid) with size, anchor and margin;
-  slide-in direction with an animated preview; press-to-capture keybind
-  with live conflict detection and free-chord suggestions; review with a
-  **Test it now** button that applies and toggles the real thing before
-  you commit.
+  slide-in direction (or centered pop-in) with an animated preview;
+  press-to-capture keybind with live conflict detection and free-chord
+  suggestions; review with a **Test it now** button that applies and
+  toggles the real thing before you commit.
 
 | | |
 |---|---|
 | ![Apps](screenshots/wizard-apps.png) | ![Layout](screenshots/wizard-layout.png) |
 | ![Keybind](screenshots/wizard-keybind.png) | ![Summary](screenshots/wizard-summary.png) |
 
+![Editing](screenshots/editor.png)
+
+Editing the centered Music scratchpad — anchor and slide-in live under the
+canvas; the pair arrangement, apps and keybind sit on the right:
+
+![Editing a centered scratchpad](screenshots/editor-center.png)
+
+- **Window capture** — a "Capture window" action on every card and in
+  the editor opens a picker of live desktop windows (workspace numbers,
+  titles, classes); picking one moves that exact window into the
+  scratchpad, adds its class to the app list (launch info and
+  single-instance detection from the installed-app catalogue) and
+  reflows it into a slot. The engine command is bindable on its own:
+  `o.bind("SUPER + SHIFT + B", "Send window to Browsing",
+  "<helper> capture browsing")` sends whatever window has focus.
 - **Two surfaces** — the panel from the bar icon, and a resizable app
   window (right-click the bar icon, `ipc call scratchpad-studio window`,
   or the ⌗ button in the panel header).
@@ -61,15 +92,30 @@ Scratchpad Studio manages **named special workspaces** natively:
 - Each scratchpad's apps get Hyprland window rules that route their window
   class into `special:<name>` silently, floating, with pixel geometry
   baked from your monitor (window-rule `size`/`move` ignore percentages —
-  verified on Hyprland 0.56.2).
+  verified on Hyprland 0.56.2). Scratchpads set to **floating** placement
+  skip the size/move rules: windows open at their own size and stay where
+  you put them.
+- Editing is not config-only: `upsert` reflows windows that are already
+  open onto their new slots (float → resize → move, works even while the
+  scratchpad is hidden), and removing an app relocates its live windows to
+  your current workspace — nothing is ever closed or killed.
 - Its chord runs `scratchpad-studio toggle <name>`: any app whose class
   isn't already on the scratchpad's workspace is launched (rules route it
-  in), then the special workspace is revealed. Single-instance apps
-  (Cider, Discord, …) match by class with no process tracking, so
-  launchers that exit immediately still work; web apps match their
-  `chrome-<host>__-Default` class.
+  in), then the special workspace is revealed — and slots-placement
+  windows are reflowed onto their configured rects, so a scratchpad
+  always lands in its saved arrangement even if a window was dragged
+  away or tiled. Single-instance apps (Cider, Discord, …) match by class
+  with no process tracking, so launchers that exit immediately still
+  work; web apps match their `chrome-<host>__-Default` class.
+- Every scratchpad owns its own `special:<id>` workspace, and ids are
+  unique — `special:scratchpad` is Omarchy's built-in (your SUPER+S
+  toggles it), so the plugin never assigns that id; a scratchpad named
+  "Scratchpad" simply becomes `special:scratchpad-2`. No two
+  scratchpads ever share a workspace, so chords never cross wires.
 - Keybinds are `o.bind()` lines in the generated file, included from a
-  clearly-marked managed block in `bindings.lua`.
+  clearly-marked managed block in `bindings.lua`. The file is regenerated
+  from state on every save, so a changed chord replaces the old line —
+  there are no orphan binds.
 
 pyprland was evaluated first and rejected: it is not packaged for stock
 Omarchy, and its `hyprctl dispatch <string>` control surface fails under
@@ -79,7 +125,8 @@ it would do here is available natively. Full decision record in
 
 Known simplification: the reveal slide is Hyprland's global
 special-workspace animation; the wizard's "slide in from" choice steers
-anchor + per-window animation so the scratchpad enters the way it sits.
+anchor + per-window animation so the scratchpad enters the way it sits
+(the centered pick anchors center and pops in).
 
 ## Files it writes
 
@@ -110,7 +157,9 @@ closed. Add `--purge` to also delete the state file and backups.
 ## Development
 
 ```sh
-python3 -m unittest discover -s tests   # geometry, generation, conflicts, catalogue
+python3 -m unittest discover -s tests   # geometry, generation, conflicts,
+                                         # catalogue, editing (placement,
+                                         # reflow, bind replacement)
 ```
 
 `bin/scratchpad-studio` (Python stdlib, no deps) is the engine;

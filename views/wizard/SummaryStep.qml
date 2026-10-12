@@ -22,8 +22,10 @@ Item {
       { label: qsTr("Workspace"), value: "special:" + (draft.id || "…") },
       { label: qsTr("Keybind"), value: draft.keybind !== "" ? draft.keybind : qsTr("none (toggle from the studio)") },
       { label: qsTr("Apps"), value: appNames.length > 0 ? appNames.join(" · ") : qsTr("none yet") },
-      { label: qsTr("Layout"), value: draft.layout + " · " + draft.anchor + " · "
-          + draft.sizePct.w + "%×" + draft.sizePct.h + "% · " + draft.marginPx + "px margin" },
+      { label: qsTr("Windows"), value: draft.placement === "floating" ? qsTr("floating freely") : qsTr("arranged in slots") },
+      { label: qsTr("Layout"), value: draft.placement === "floating" ? "—"
+          : draft.layout + " · " + draft.anchor + " · "
+            + draft.sizePct.w + "%×" + draft.sizePct.h + "% · " + draft.marginPx + "px margin" },
       { label: qsTr("Slide-in"), value: draft.transition }
     ]
   }

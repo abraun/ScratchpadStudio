@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Layouts
 import Quickshell
 import qs.Commons
 import qs.Ui
@@ -22,6 +23,7 @@ Item {
   signal duplicateRequested()
   signal deleteRequested()
   signal adoptRequested()
+  signal captureRequested()
 
   readonly property color hairline: Color.popups.border
   readonly property color dim: Qt.darker(Color.foreground, 1.45)
@@ -50,6 +52,7 @@ Item {
     anchors.fill: parent
     hoverEnabled: true
     acceptedButtons: Qt.LeftButton
+    cursorShape: Qt.PointingHandCursor
     onClicked: root.toggleRequested()
   }
 
@@ -168,7 +171,11 @@ Item {
   }
 
   // ---- actions ----
-  Row {
+  // RowLayout, not Row: hidden buttons (Copy/Delete on the built-in card)
+  // must not donate their width to the arithmetic — the Show button used
+  // to shrink by widths that were not on screen and clip its own label,
+  // leaving hover/click area that matched nothing visible.
+  RowLayout {
     id: actions
     anchors.bottom: parent.bottom
     anchors.left: parent.left
@@ -177,17 +184,23 @@ Item {
     spacing: Style.space(6)
 
     Button {
+      Layout.fillWidth: true
       text: root.card.status === "shown" ? qsTr("Hide") : qsTr("Show")
       height: Style.space(28)
-      width: parent.width - editBtn.width - copyBtn.width - deleteBtn.width - parent.spacing * 3
       fontSize: Style.font.bodySmall
       iconText: root.card.status === "shown" ? "󰈈" : "󰈄"
+      tooltipText: root.card.status === "shown" ? qsTr("Hide this scratchpad") : qsTr("Show this scratchpad")
       onClicked: root.toggleRequested()
     }
     Button {
       id: editBtn
+      Layout.alignment: Qt.AlignVCenter
       visible: root.card.editable || root.card.adoptable
-      text: root.card.adoptable ? qsTr("Adopt") : qsTr("Edit")
+      // Managed cards carry four actions in 268px — Edit/Copy/Delete go
+      // icon-only (tooltips carry the meaning) or the Show label clips to
+      // a sliver. Adopt keeps its word: adoptable cards have room.
+      text: root.card.adoptable ? qsTr("Adopt") : ""
+      tooltipText: root.card.adoptable ? qsTr("Adopt this workspace into the studio") : qsTr("Edit this scratchpad")
       height: Style.space(28)
       fontSize: Style.font.bodySmall
       iconText: root.card.adoptable ? "󰐗" : "󰏫"
@@ -195,8 +208,9 @@ Item {
     }
     Button {
       id: copyBtn
+      Layout.alignment: Qt.AlignVCenter
       visible: root.card.editable
-      text: qsTr("Copy")
+      text: ""
       tooltipText: qsTr("Duplicate this scratchpad")
       height: Style.space(28)
       fontSize: Style.font.bodySmall
@@ -204,9 +218,22 @@ Item {
       onClicked: root.duplicateRequested()
     }
     Button {
+      id: captureBtn
+      Layout.alignment: Qt.AlignVCenter
+      visible: root.card.editable
+      text: ""
+      tooltipText: qsTr("Capture a desktop window into this scratchpad")
+      height: Style.space(28)
+      fontSize: Style.font.bodySmall
+      iconText: "󰆼"
+      onClicked: root.captureRequested()
+    }
+    Button {
       id: deleteBtn
+      Layout.alignment: Qt.AlignVCenter
       visible: root.card.origin !== "builtin"
-      text: qsTr("Delete")
+      text: ""
+      tooltipText: qsTr("Delete this scratchpad — its windows stay open")
       height: Style.space(28)
       fontSize: Style.font.bodySmall
       foreground: Color.urgent

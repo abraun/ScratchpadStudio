@@ -17,8 +17,12 @@ Item {
   id: root
 
   required property var editScratchpad     // null = create; object = edit
+  property bool duplicate: false          // editScratchpad is an unsaved copy
   property bool demo: false
   property var monitor: null               // {width, height, scale} for previews
+  // All taken scratchpad ids plus the reserved built-in, for free-id
+  // assignment in the first step (see StudioState.uniqueId).
+  property var existingIds: []
 
   signal finished(var scratchpad)
   signal canceled()
@@ -32,6 +36,7 @@ Item {
     anchor: "top",
     layout: "single",
     transition: "down",
+    placement: "slots",
     sizePct: { w: 60, h: 50 },
     marginPx: 12,
     apps: []
@@ -46,6 +51,14 @@ Item {
   Component.onCompleted: {
     if (editScratchpad) draft = JSON.parse(JSON.stringify(editScratchpad))
     forceActiveFocus()
+  }
+
+  // Surfaces are constructed before any edit begins; re-copy when the
+  // target changes (also covers duplicate -> edit switches).
+  onEditScratchpadChanged: {
+    if (editScratchpad) draft = JSON.parse(JSON.stringify(editScratchpad))
+    step = 0
+    tested = false
   }
 
   // Re-assign the draft so var-property bindings (previews, summaries)
@@ -87,9 +100,10 @@ Item {
 
   function cancel() {
     // "Test it now" writes the draft for real; canceling afterwards restores
-    // what was there before the wizard opened.
+    // what was there before the wizard opened. A duplicate (or any draft
+    // that did not exist in state yet) is deleted again, not re-saved.
     if (tested) {
-      if (original) runHelper("upsert", JSON.stringify(original))
+      if (original && !duplicate) runHelper("upsert", JSON.stringify(original))
       else if (draft.id) runHelper(["delete", draft.id])
     }
     canceled()
@@ -111,16 +125,27 @@ Item {
     Quickshell.execDetached(["bash", "-c", command + " 2>&1"])
   }
 
+  // The last step's Save/Create must wait for a free chord — a taken one
+  // would either shadow an existing bind or make one chord toggle two
+  // scratchpads. Surfaced as a disabled button plus a hint (the captain
+  // asked for a hard block, not an overridable warning).
+  readonly property bool keybindBlocked:
+    step === root.steps.length - 1 && keybindStepItem.blockingConflict
+
   function finish() {
+    if (keybindBlocked) return
     if (!demo) runHelper("upsert", JSON.stringify(draft))
     finished(draft)
   }
 
   function testNow() {
-    if (demo) return
+    if (demo || keybindBlocked) return
     runHelper("upsert", JSON.stringify(draft))
     Qt.callLater(function() {
-      runHelper(["toggle", draft.id || "scratchpad"])
+      // Never fall back to "scratchpad" — that is Omarchy's built-in
+      // special; toggling it from here would be exactly the shared-
+      // workspace confusion unique_id exists to prevent.
+      if (draft.id) runHelper(["toggle", draft.id])
     })
     tested = true
   }
@@ -182,13 +207,21 @@ Item {
       Layout.fillHeight: true
       currentIndex: root.step
 
-      BasicsStep { draft: root.draft; onTouched: root.touch() }
+      BasicsStep {
+        draft: root.draft
+        existingIds: root.existingIds
+        editScratchpad: root.editScratchpad
+        duplicate: root.duplicate
+        onTouched: root.touch()
+      }
       AppsStep { draft: root.draft; demo: root.demo; onTouched: root.touch() }
       LayoutStep { draft: root.draft; usable: root.usable(); onTouched: root.touch() }
       TransitionStep { draft: root.draft; onTouched: root.touch() }
       KeybindStep {
         id: keybindStepItem
         draft: root.draft
+        selfId: root.editScratchpad ? root.editScratchpad.id : ""
+        selfName: root.editScratchpad ? root.editScratchpad.name : ""
         onTouched: root.touch()
         // The step sees raw chords only while it holds focus; grab it when
         // it becomes current so capture works without a click.
@@ -210,6 +243,17 @@ Item {
     }
 
     // footer nav
+    Text {
+      Layout.fillWidth: true
+      visible: root.keybindBlocked
+      wrapMode: Text.Wrap
+      text: qsTr("That keybind is already taken — go back to the keybind step and pick a free chord to save.")
+      color: Color.urgent
+      font.family: Style.font.family
+      font.pixelSize: Style.font.caption
+      renderType: Text.NativeRendering
+    }
+
     Row {
       Layout.fillWidth: true
       spacing: Style.space(8)
@@ -221,7 +265,7 @@ Item {
           : qsTr("Next")
         iconText: root.step === root.steps.length - 1 ? "󰸞" : "󰁔"
         fontSize: Style.font.body
-        enabled: root.canAdvance()
+        enabled: root.canAdvance() && !root.keybindBlocked
         onClicked: root.advance()
       }
 

@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "scratchpad-studio",
   "name": "Scratchpad Studio",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Scratchpad Studio contributors",
   "license": "MIT",
-  "description": "A studio for multiple scratchpads: named, hideable window sets that slide in on a keybind. See every scratchpad with a live schematic of its windows, create new ones from installed apps, pick layouts and slide-in anchors, bind chords with conflict checking, and toggle them all from the bar. Engine is native Hyprland special workspaces — no daemon.",
+  "description": "A studio for multiple scratchpads: named, hideable window sets that slide in on a keybind. See every scratchpad with a live schematic of its windows, create new ones from installed apps, edit existing ones in a visual layout editor (rearrange, add/remove apps, rebind), and toggle them all from the bar. Engine is native Hyprland special workspaces — no daemon.",
   "kinds": [
     "bar-widget"
   ],

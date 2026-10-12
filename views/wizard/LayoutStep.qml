@@ -4,9 +4,12 @@ import QtQuick.Layouts
 import qs.Commons
 import qs.Ui
 import "../../lib/Layout.js" as LayoutMath
+import ".."
 
-// LayoutStep — pick the window arrangement, anchor, size and margin, with a
-// live preview drawn from the same math the engine bakes into rules.
+// LayoutStep — pick how windows are placed (arranged in slots or floating),
+// then the slot arrangement, anchor, size and margin, with a live preview
+// drawn from the same math the engine bakes into rules. Slot controls hide
+// when the scratchpad floats its windows — they would pin nothing.
 Item {
   id: root
 
@@ -14,81 +17,33 @@ Item {
   property var usable: [1800, 1125]
   signal touched()
 
-  readonly property var layouts: LayoutMath.LAYOUTS
+  readonly property bool slots: root.draft && root.draft.placement !== "floating"
 
   ColumnLayout {
     anchors.fill: parent
     spacing: Style.space(10)
 
-    // layout thumbnails
-    Flow {
+    // placement + layout thumbnails (shared component)
+    LayoutThumbRow {
+      id: thumbs
       Layout.fillWidth: true
-      spacing: Style.space(8)
-
-      Repeater {
-        model: root.layouts
-
-        Rectangle {
-          required property var modelData
-          readonly property bool chosen: root.draft && root.draft.layout === modelData.id
-          width: Style.space(96)
-          height: Style.space(84)
-          radius: Style.cornerRadius
-          color: chosen ? Qt.alpha(Color.accent, 0.12) : Qt.alpha(Color.foreground, 0.04)
-          border.width: chosen ? 2 : 1
-          border.color: chosen ? Color.accent : Color.popups.border
-          Behavior on border.color { ColorAnimation { duration: 140 } }
-          Behavior on color { ColorAnimation { duration: 140 } }
-
-          MouseArea {
-            anchors.fill: parent
-            hoverEnabled: true
-            onClicked: {
-              root.draft.layout = modelData.id
-              root.touched()
-            }
-          }
-
-          Column {
-            anchors.centerIn: parent
-            spacing: Style.space(5)
-
-            // thumbnail: normalized slot boxes
-            Item {
-              width: Style.space(64)
-              height: Style.space(40)
-              Repeater {
-                model: LayoutMath.thumbBoxes(modelData.id, Math.max(1, root.draft ? root.draft.apps.length : 1))
-                Rectangle {
-                  required property var modelData
-                  x: modelData.x * parent.width
-                  y: modelData.y * parent.height
-                  width: modelData.w * parent.width
-                  height: modelData.h * parent.height
-                  radius: 2
-                  color: chosen ? Qt.alpha(Color.accent, 0.45) : Qt.alpha(Color.foreground, 0.22)
-                  border.width: 1
-                  border.color: chosen ? Color.accent : Qt.alpha(Color.foreground, 0.35)
-                }
-              }
-            }
-
-            Text {
-              anchors.horizontalCenter: parent.horizontalCenter
-              text: modelData.label
-              color: chosen ? Color.foreground : Color.muted
-              font.family: Style.font.family
-              font.pixelSize: Style.font.caption
-              renderType: Text.NativeRendering
-            }
-          }
-        }
+      layoutId: root.draft ? root.draft.layout : "single"
+      placement: root.draft ? root.draft.placement : "slots"
+      count: root.draft ? Math.max(1, root.draft.apps.length) : 1
+      onLayoutChosen: function(id) {
+        root.draft.layout = id
+        root.touched()
+      }
+      onPlacementChosen: function(mode) {
+        root.draft.placement = mode
+        root.touched()
       }
     }
 
     RowLayout {
       Layout.fillWidth: true
       spacing: Style.space(16)
+      visible: root.slots
 
       // anchor
       ColumnLayout {
@@ -103,7 +58,7 @@ Item {
         Row {
           spacing: Style.space(4)
           Repeater {
-            model: ["top", "bottom", "left", "right"]
+            model: ["top", "bottom", "left", "right", "center"]
             Button {
               required property string modelData
               text: modelData
@@ -192,6 +147,7 @@ Item {
     RowLayout {
       Layout.fillWidth: true
       spacing: Style.space(12)
+      visible: root.slots
 
       ColumnLayout {
         Layout.fillWidth: true
