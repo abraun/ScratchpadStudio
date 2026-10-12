@@ -5,6 +5,7 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
+import "../lib/WindowIdentity.js" as WindowIdentity
 
 // WindowPickerList — live desktop windows to capture into a scratchpad:
 // one row per window (workspace number, class, title), search box, click
