@@ -119,6 +119,7 @@ FloatingWindow {
         onToggleRequested: function(card) { hostWidget && hostWidget.toggleScratchpad(card) }
         onEditRequested: function(card) { hostWidget && hostWidget.editScratchpad(card) }
         onDeleteRequested: function(card) { hostWidget && hostWidget.deleteScratchpad(card) }
+        onCaptureRequested: function(card) { hostWidget && hostWidget.requestCapture(card) }
         onDuplicateRequested: function(card) { hostWidget && hostWidget.duplicateScratchpad(card) }
         onAdoptRequested: function(card) { hostWidget && hostWidget.helper(["adopt", card.id]) }
         onNewRequested: hostWidget && hostWidget.newScratchpad()
@@ -153,6 +154,10 @@ FloatingWindow {
 
         onSaved: function(sp) { hostWidget && hostWidget.closeDetail() }
         onCanceled: hostWidget && hostWidget.closeDetail()
+        onCaptureRequested: {
+          if (hostWidget && hostWidget.editorScratchpad)
+            hostWidget.requestCapture(hostWidget.editorScratchpad)
+        }
       }
 
       // Delete confirm centered over the window content (the panel hosts
@@ -169,17 +174,68 @@ FloatingWindow {
         onConfirmed: hostWidget && hostWidget.confirmDelete()
         onCanceled: hostWidget && hostWidget.cancelDelete()
       }
+
+      // Live-window capture picker over the window content; the panel
+      // hosts its own copy driven by the same captureOpen flag.
+      Rectangle {
+        anchors.fill: parent
+        visible: hostWidget ? hostWidget.captureOpen : false
+        radius: Style.cornerRadius
+        color: Qt.alpha(Color.background, 0.92)
+        border.width: 1
+        border.color: Color.popups.border
+
+        ColumnLayout {
+          anchors.fill: parent
+          anchors.margins: Style.space(10)
+          spacing: Style.space(6)
+
+          RowLayout {
+            Layout.fillWidth: true
+            Text {
+              Layout.fillWidth: true
+              text: hostWidget
+                ? qsTr("Capture a window into “%1”").arg(hostWidget.captureTargetName)
+                : ""
+              color: Color.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.subtitle
+              font.bold: true
+              renderType: Text.NativeRendering
+            }
+            Button {
+              text: qsTr("Done")
+              iconText: "󰄬"
+              fontSize: Style.font.bodySmall
+              onClicked: hostWidget && hostWidget.cancelCaptureWindow()
+            }
+          }
+
+          WindowPickerList {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            onPicked: function(win) {
+              if (hostWidget) {
+                hostWidget.helper(["capture", hostWidget.captureTargetId, "--address", win.address])
+                hostWidget.cancelCaptureWindow()
+              }
+            }
+            onEscapeRequested: hostWidget && hostWidget.cancelCaptureWindow()
+          }
+        }
+      }
     }
   }
 
   // FloatingWindow is a Window, not an Item — Keys doesn't attach, so a
-  // Shortcut on the content does Esc-close instead. Esc cancels an open
-  // delete dialog before it ever closes the window.
+  // Shortcut on the content does Esc-close instead. Esc backs out of the
+  // delete confirm or the capture picker before it ever closes the window.
   Shortcut {
     sequence: "Esc"
     context: Qt.WindowShortcut
     onActivated: {
       if (root.hostWidget && root.hostWidget.deleteOpen) root.hostWidget.cancelDelete()
+      else if (root.hostWidget && root.hostWidget.captureOpen) root.hostWidget.cancelCaptureWindow()
       else root.visible = false
     }
   }

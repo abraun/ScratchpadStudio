@@ -17,6 +17,9 @@ Usage: scratchpad-studio <command> [args]
   reflow <id>             move live scratchpad windows to their slot rects
   delete <id> [--keep]    remove scratchpad (windows move to current ws)
   adopt <id> [--name N]   take over an existing special workspace
+  capture <id>            move the focused window (or --class C /
+                          --address A) into the scratchpad and add its
+                          class - bindable as 'send window to <id>'
   install / uninstall     wire in / cleanly remove the managed config
   state-path              print the state file path
   version                 print the plugin version
@@ -223,6 +226,58 @@ def cmd_upsert(argv: list[str]) -> None:
         move_class_out(sp["id"], cls)
     reflow(sp["id"], quiet=True)
     print(json.dumps({"id": sp["id"], "removedApps": gone}))
+
+
+def cmd_capture(argv: list[str]) -> None:
+    """Move an existing desktop window into a scratchpad (stdin-free).
+
+    Target: the currently focused window, or --class <class> / --address
+    <addr> to pick one explicitly. The window is moved onto the scratchpad's
+    special workspace (silent - follow=false, the movetoworkspacesilent
+    semantic), its class is added to the app list if new (with launch info
+    and single-instance detection from the app catalogue), config is
+    regenerated (so future windows of the class route here) and the
+    captured window is reflowed into its slot. Never closes or kills
+    anything; --allow-conflicts overrides the class-ownership guard."""
+    sp_id = argv[2]
+    cls_flag = flag_value(argv, "--class")
+    address_flag = flag_value(argv, "--address")
+    state = load_state()
+    sp = find_sp(state, sp_id)
+    if sp is None:
+        die(f"unknown scratchpad: {sp_id}")
+    clients_list = clients()
+    try:
+        focused = hyprctl_json(["-j", "activewindow"])
+    except (SystemExit, json.JSONDecodeError, ValueError):
+        focused = None
+    target, reason = select_capture_target(
+        clients_list, focused, address_flag, cls_flag)
+    if target is None:
+        die(reason)
+    cls = str(target.get("class") or "")
+    owner = class_owned_by_other(state, cls, sp["id"])
+    if owner is not None and "--allow-conflicts" not in argv:
+        die(f"class {cls} already belongs to scratchpad '{owner['name']}' - "
+            "capture would route that class two ways (or pass --allow-conflicts)")
+    address = str(target.get("address") or "")
+    dispatch_lua(
+        f'hl.dsp.window.move({{ window = {lua_quote("address:" + address)}, '
+        f'workspace = {lua_quote("special:" + sp["id"])} , follow = false }})'
+    )
+    app_added = False
+    if cls and all(app["class"] != cls for app in sp["apps"]):
+        sp["apps"].append(build_captured_app(target, app_catalogue()))
+        app_added = True
+        save_state(state)
+        apply(quiet=True)
+    reflow(sp_id, quiet=True)
+    print(json.dumps({
+        "captured": address,
+        "class": cls,
+        "appAdded": app_added,
+        "workspace": f"special:{sp['id']}",
+    }))
 
 
 def die(message: str, code: int = 1) -> None:
@@ -1196,7 +1251,7 @@ def cmd_conflicts(chord: str, as_json: bool = False, self_id: str | None = None)
         print(json.dumps(payload, indent=2))
 
 
-def cmd_binds_json() -> None:
+def cmd_binds_json() -> str:
     """Slim live-bind list for suggestion math: [{modmask, key, description}]."""
     binds = hyprctl_json(["-j", "binds"])
     slim = [
@@ -1205,6 +1260,111 @@ def cmd_binds_json() -> None:
         for b in binds
     ]
     print(json.dumps(slim))
+
+
+# ------------------------------------------------------- window capture
+
+def live_windows() -> list[dict]:
+    """Mappable windows for the capture picker: regular workspaces only,
+    studio window excluded. Carries the address so the GUI can capture an
+    exact window, not just a class."""
+    out = []
+    for client in clients():
+        if not client.get("mapped", True):
+            continue
+        ws = client.get("workspace", {}) or {}
+        ws_name = str(ws.get("name") or "")
+        if ws_name.startswith("special:"):
+            continue
+        cls = str(client.get("class") or "")
+        if cls == "org.quickshell":
+            continue
+        out.append({
+            "address": str(client.get("address") or ""),
+            "class": cls,
+            "title": str(client.get("title") or ""),
+            "workspace": int(ws.get("id") or 0),
+            "floating": bool(client.get("floating")),
+        })
+    return out
+
+
+def cmd_windows_json() -> None:
+    print(json.dumps(live_windows()))
+
+
+def select_capture_target(clients_list: list[dict], focused: dict | None,
+                          address: str | None, cls: str | None
+                          ) -> tuple[dict | None, str | None]:
+    """Pick the window a capture should move: --address wins, then
+    --class (first match), else the currently focused window. Returns
+    (window, None) or (None, reason). Windows already living on a special
+    workspace are refused - they are scratchpad residents, not desktop
+    windows waiting to be captured."""
+    target = None
+    if address:
+        for client in clients_list:
+            if str(client.get("address") or "") == address:
+                target = client
+                break
+        if target is None:
+            return None, f"no window with address {address}"
+    elif cls:
+        for client in clients_list:
+            if str(client.get("class") or "") == cls:
+                target = client
+                break
+        if target is None:
+            return None, f"no window with class {cls}"
+    else:
+        target = focused
+        if target is None or not target.get("address"):
+            return None, "no focused window"
+    ws_name = str((target.get("workspace") or {}).get("name") or "")
+    if ws_name.startswith("special:"):
+        return None, f"window is already on {ws_name}"
+    if str(target.get("class") or "") == "org.quickshell":
+        return None, "refusing to capture the studio's own window"
+    return target, None
+
+
+def class_owned_by_other(state: dict, cls: str, sp_id: str) -> dict | None:
+    """The scratchpad (other than sp_id) already managing this window class,
+    if any - two scratchpads with class rules for one class would route
+    each other's windows (the shared-workspace lesson, at class level)."""
+    for sp in state["scratchpads"]:
+        if sp["id"] == sp_id:
+            continue
+        for app in sp["apps"]:
+            if app["class"] == cls:
+                return sp
+    return None
+
+
+def build_captured_app(client: dict, catalogue: list[dict]) -> dict:
+    """App-list entry for a captured window: catalogue match by window
+    class gives the real name/launch command and the single-instance
+    detection (same source as the wizard's picker); without a desktop
+    entry the class is all we know, and the window itself is already in
+    the scratchpad, so an empty command is honest."""
+    cls = str(client.get("class") or "")
+    title = str(client.get("title") or "")
+    for entry in catalogue:
+        if entry.get("wmClass") == cls:
+            return {
+                "name": str(entry.get("name") or cls),
+                "command": str(entry.get("command") or ""),
+                "class": cls,
+                "webapp": bool(entry.get("webapp")),
+                "singleInstance": bool(entry.get("singleInstance")),
+            }
+    return {
+        "name": (title.split(" ")[0][:24] or cls),
+        "command": "",
+        "class": cls,
+        "webapp": cls.startswith("chrome-"),
+        "singleInstance": cls.lower() in SINGLE_INSTANCE_CLASSES,
+    }
 
 
 # ---------------------------------------------------------------- commands
@@ -1290,6 +1450,10 @@ def main(argv: list[str]) -> None:
         cmd_conflicts(argv[2], as_json=True, self_id=flag_value(argv, "--self"))
     elif command == "binds-json":
         cmd_binds_json()
+    elif command == "capture" and len(argv) >= 3:
+        cmd_capture(argv)
+    elif command == "windows-json":
+        cmd_windows_json()
     elif command == "apps":
         cmd_apps()
     elif command == "upsert":

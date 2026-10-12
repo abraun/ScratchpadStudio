@@ -260,3 +260,82 @@ class TestManagedBindFiltering(FixtureCase):
         kept = self.sst.filter_managed_binds([omarchy])
         self.assertEqual(len(kept), 1)
         self.assertIsNotNone(self.sst.find_bind_conflict("SUPER + S", kept))
+
+
+class TestWindowCapture(FixtureCase):
+    """capture <id>: move an existing desktop window into a scratchpad -
+    target selection, class-ownership guard, and the app-list entry the
+    capture adds."""
+
+    def client(self, address, cls, ws="2", title="T", ws_id=None):
+        return {"address": address, "class": cls, "title": title,
+                "mapped": True,
+                "workspace": {"id": ws_id if ws_id is not None else int(ws),
+                              "name": ws}}
+
+    def test_address_pick(self):
+        clients = [self.client("0xA", "foot", "2"), self.client("0xB", "ck", "3")]
+        win, err = self.sst.select_capture_target(clients, None, "0xB", None)
+        self.assertIsNone(err)
+        self.assertEqual(win["address"], "0xB")
+
+    def test_class_pick_prefers_regular_workspaces(self):
+        clients = [self.client("0xA", "foot", "2"), self.client("0xB", "foot", "5")]
+        win, err = self.sst.select_capture_target(clients, None, None, "foot")
+        self.assertIsNone(err)
+        self.assertEqual(win["address"], "0xA")
+
+    def test_focused_window_is_the_default(self):
+        focused = self.client("0xF", "foot", "7")
+        win, err = self.sst.select_capture_target([focused], focused, None, None)
+        self.assertIsNone(err)
+        self.assertEqual(win["address"], "0xF")
+
+    def test_refuses_special_residents(self):
+        clients = [self.client("0xA", "foot", "special:music", ws_id=-99)]
+        win, err = self.sst.select_capture_target(clients, None, "0xA", None)
+        self.assertIsNone(win)
+        self.assertIn("special:music", err)
+
+    def test_refuses_the_studio_window(self):
+        clients = [self.client("0xA", "org.quickshell", "1")]
+        win, err = self.sst.select_capture_target(clients, None, "0xA", None)
+        self.assertIsNone(win)
+        self.assertIn("studio", err)
+
+    def test_missing_target_reports(self):
+        win, err = self.sst.select_capture_target([], None, None, None)
+        self.assertIsNone(win)
+        self.assertIn("no focused window", err)
+
+    def test_class_owned_by_another_scratchpad(self):
+        st = state(sp(id="music", name="Music", apps=[
+            {"name": "Cider", "command": "cider", "class": "Cider",
+             "webapp": False, "singleInstance": True}]),
+            sp(id="ai", name="AI", apps=[
+                {"name": "AI", "command": "a", "class": "chrome-x__-Default",
+                 "webapp": True, "singleInstance": False}]))
+        self.assertEqual(self.sst.class_owned_by_other(st, "Cider", "ai")["id"], "music")
+        self.assertIsNone(self.sst.class_owned_by_other(st, "Cider", "music"))
+        self.assertIsNone(self.sst.class_owned_by_other(st, "Other", "ai"))
+
+    def test_captured_app_prefers_catalogue_entry(self):
+        cat = [{"name": "Foot", "wmClass": "foot", "command": "foot",
+                "webapp": False, "singleInstance": False}]
+        app = self.sst.build_captured_app(self.client("0xA", "foot"), cat)
+        self.assertEqual(app, {"name": "Foot", "command": "foot", "class": "foot",
+                               "webapp": False, "singleInstance": False})
+
+    def test_captured_app_without_catalogue_falls_back_to_class(self):
+        app = self.sst.build_captured_app(
+            self.client("0xA", "someapp", title="Some App - cool things"), [])
+        self.assertEqual(app["name"], "Some")
+        self.assertEqual(app["command"], "")
+        self.assertEqual(app["class"], "someapp")
+        self.assertFalse(app["singleInstance"])
+
+    def test_captured_webapp_class_detected_single_instance(self):
+        app = self.sst.build_captured_app(
+            self.client("0xA", "Cider", title="Cider - music player"), [])
+        self.assertEqual(app["name"], "Cider")
+        self.assertTrue(app["singleInstance"])

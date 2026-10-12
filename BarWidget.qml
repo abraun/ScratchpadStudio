@@ -121,6 +121,20 @@ Panel {
 
   // ---------------- engine bridge (helper CLI) ----------------
 
+  // After a capture into the scratchpad being edited, re-arm the editor's
+  // draft from the refreshed state so the captured app shows up (the
+  // helper added it to the state file; the FileView reloads stateJson).
+  property bool editorCaptureRefresh: false
+  onStateChanged: {
+    if (!editorCaptureRefresh || detail !== "editor" || !editorScratchpad) return
+    var fresh = findStateScratchpad(editorScratchpad.id)
+    if (fresh) {
+      editorScratchpad = null
+      editorScratchpad = fresh
+    }
+    editorCaptureRefresh = false
+  }
+
   function helper(args) {
     if (demoMode) return
     Quickshell.execDetached(["bash", "-c",
@@ -156,10 +170,34 @@ Panel {
     deleteOpen = false
   }
 
+  // Window capture: the card's capture button opens the live-window
+  // picker; picking a row runs `capture <id> --address <addr>` which
+  // moves that exact window into the scratchpad and adds its class.
+  function requestCapture(card) {
+    captureTargetId = card.id
+    captureTargetName = card.name
+    captureOpen = true
+  }
+
+  function cancelCaptureWindow() {
+    captureTargetId = ""
+    captureOpen = false
+  }
+
+  property string captureTargetId: ""
+  property string captureTargetName: ""
+  property bool captureOpen: false
+
   // A modal confirm must not outlive its panel: closing the panel (click
   // away, Esc from the bar, panel switch) cancels any pending delete so
-  // it cannot reappear the next time the panel opens.
-  onOpenedChanged: if (!opened) cancelDelete()
+  // it cannot reappear the next time the panel opens. Same for the
+  // capture picker.
+  onOpenedChanged: {
+    if (!opened) {
+      cancelDelete()
+      cancelCaptureWindow()
+    }
+  }
 
   property var deleteTarget: null
   property bool deleteOpen: false
@@ -270,8 +308,9 @@ Panel {
       // The wizard/editor own the keyboard while open: their TextFields
       // eat typing and chord capture needs raw keys (arrows included).
       // The delete dialog owns it while open — arrows move its selection,
-      // Enter confirms, Esc cancels (instead of closing the panel).
-      blocked: root.detail !== ""
+      // Enter confirms, Esc cancels (instead of closing the panel). The
+      // capture picker's search field takes it while that is open.
+      blocked: root.detail !== "" || root.captureOpen
 
       onMoveRequested: function(dx, dy) {
         if (root.deleteOpen && dx !== 0)
@@ -284,6 +323,7 @@ Panel {
       }
       onCloseRequested: {
         if (root.deleteOpen) root.cancelDelete()
+        else if (root.captureOpen) root.cancelCaptureWindow()
         else root.close()
       }
       onTabRequested: function(direction) {
@@ -389,6 +429,7 @@ Panel {
               onDeleteRequested: function(card) { root.deleteScratchpad(card) }
               onDuplicateRequested: function(card) { root.duplicateScratchpad(card) }
               onAdoptRequested: function(card) { root.helper(["adopt", card.id]) }
+              onCaptureRequested: function(card) { root.requestCapture(card) }
               onNewRequested: root.newScratchpad()
             }
 
@@ -416,6 +457,9 @@ Panel {
 
               onSaved: function(sp) { root.closeDetail() }
               onCanceled: root.closeDetail()
+              onCaptureRequested: {
+                if (root.editorScratchpad) root.requestCapture(root.editorScratchpad)
+              }
             }
           }
         }
@@ -436,6 +480,60 @@ Panel {
         confirmText: qsTr("Delete")
         onConfirmed: root.confirmDelete()
         onCanceled: root.cancelDelete()
+      }
+
+      // Live-window capture picker, hosted over the panel content like the
+      // delete confirm. Picking a row runs the capture command for that
+      // exact window address; the state refresh moves the card's app list
+      // and the reflow lands the window on its slot.
+      Rectangle {
+        anchors.fill: parent
+        visible: root.captureOpen
+        radius: Style.cornerRadius
+        color: Qt.alpha(Color.background, 0.92)
+        border.width: 1
+        border.color: Color.popups.border
+
+        ColumnLayout {
+          anchors.fill: parent
+          anchors.margins: Style.space(10)
+          spacing: Style.space(6)
+
+          RowLayout {
+            Layout.fillWidth: true
+            Text {
+              Layout.fillWidth: true
+              text: qsTr("Capture a window into “%1”").arg(root.captureTargetName)
+              color: Color.foreground
+              font.family: Style.font.family
+              font.pixelSize: Style.font.subtitle
+              font.bold: true
+              renderType: Text.NativeRendering
+            }
+            Button {
+              text: qsTr("Done")
+              iconText: "󰄬"
+              fontSize: Style.font.bodySmall
+              onClicked: root.cancelCaptureWindow()
+            }
+          }
+
+          WindowPickerList {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            compact: true
+            onPicked: function(win) {
+              root.helper(["capture", root.captureTargetId, "--address", win.address])
+              // Editing that scratchpad? Reload its draft once the helper
+              // has written the captured app into the state file.
+              if (root.detail === "editor" && root.editorScratchpad
+                  && root.captureTargetId === root.editorScratchpad.id)
+                root.editorCaptureRefresh = true
+              root.cancelCaptureWindow()
+            }
+            onEscapeRequested: root.cancelCaptureWindow()
+          }
+        }
       }
     }
   }

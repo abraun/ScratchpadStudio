@@ -90,6 +90,17 @@ changes and regenerates automatically. Documented in the README.
   No PID tracking at all — presence is class-based, which is exactly the
   fix for single-instance apps (Cider) and web apps
   (`chrome-<host>__-Default` classes from `--app=URL`).
+- **Window capture** (`bin/scratchpad-studio capture <id>`):
+  move an existing desktop window into a scratchpad — the focused window
+  by default, or `--class` / `--address` to pick one. The window moves
+  onto the special workspace (silent, follow=false), its class joins the
+  app list if new (name/launch command/single-instance from the app
+  catalogue), config regenerates so future windows of the class route
+  here, and the window reflows into its slot. Guards: windows already on
+  a special workspace are refused, the studio's own window is refused,
+  a class managed by another scratchpad is refused (one class, one
+  scratchpad - same rule as ids), and the GUI's picker lists live
+  windows per workspace. Bindable: `capture <id>` is the whole command.
 - **Never kills windows**: delete removes rules + state; windows that were
   living on the special workspace are moved to the current workspace
   first (unless empty).
@@ -149,6 +160,7 @@ BarWidget.qml            bar icon + PopupCard panel host + FloatingWindow host +
 StudioWindow.qml         resizable app-window surface (same views)
 views/                   Overview.qml, Wizard.qml, Editor.qml, ScratchpadCard.qml,
                          Schematic.qml, AppPickerList.qml (shared picker),
+                         WindowPickerList.qml (live-window capture picker),
                          KeybindCapture.qml (shared chord capture),
                          LayoutThumbRow.qml (shared placement+layout picker),
                          EmptyState.qml

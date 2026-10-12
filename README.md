@@ -55,6 +55,14 @@ canvas; the pair arrangement, apps and keybind sit on the right:
 
 ![Editing a centered scratchpad](screenshots/editor-center.png)
 
+- **Window capture** — a "Capture window" action on every card and in
+  the editor opens a picker of live desktop windows (workspace numbers,
+  titles, classes); picking one moves that exact window into the
+  scratchpad, adds its class to the app list (launch info and
+  single-instance detection from the installed-app catalogue) and
+  reflows it into a slot. The engine command is bindable on its own:
+  `o.bind("SUPER + SHIFT + B", "Send window to Browsing",
+  "<helper> capture browsing")` sends whatever window has focus.
 - **Two surfaces** — the panel from the bar icon, and a resizable app
   window (right-click the bar icon, `ipc call scratchpad-studio window`,
   or the ⌗ button in the panel header).

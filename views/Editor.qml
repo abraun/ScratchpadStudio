@@ -30,6 +30,7 @@ Item {
 
   signal saved(var scratchpad)
   signal canceled()
+  signal captureRequested()
 
   // The draft is this instance's working copy. The panel and the app
   // window each instantiate the editor and each keeps its own draft
@@ -897,8 +898,8 @@ Item {
         Rectangle {
           Layout.fillWidth: true
           Layout.fillHeight: true
-          Layout.preferredHeight: Math.min(Style.space(150),
-            Style.space(30) * Math.max(1, root.appCount) + Style.space(64))
+          Layout.preferredHeight: Math.min(Style.space(180),
+            Style.space(30) * Math.max(1, root.appCount) + Style.space(96))
           radius: Style.cornerRadius
           color: Qt.alpha(Color.foreground, 0.035)
           border.width: 1
@@ -1081,6 +1082,16 @@ Item {
                 root.addingApp = true
                 Qt.callLater(function() { pickerOverlay.focusSearch() })
               }
+            }
+
+            Button {
+              Layout.fillWidth: true
+              height: Style.space(28)
+              text: qsTr("Capture window")
+              iconText: "󰆼"
+              tooltipText: qsTr("Move an existing desktop window into this scratchpad")
+              fontSize: Style.font.bodySmall
+              onClicked: root.captureRequested()
             }
           }
         }

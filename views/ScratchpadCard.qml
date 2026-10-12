@@ -23,6 +23,7 @@ Item {
   signal duplicateRequested()
   signal deleteRequested()
   signal adoptRequested()
+  signal captureRequested()
 
   readonly property color hairline: Color.popups.border
   readonly property color dim: Qt.darker(Color.foreground, 1.45)
@@ -215,6 +216,17 @@ Item {
       fontSize: Style.font.bodySmall
       iconText: "󰆏"
       onClicked: root.duplicateRequested()
+    }
+    Button {
+      id: captureBtn
+      Layout.alignment: Qt.AlignVCenter
+      visible: root.card.editable
+      text: ""
+      tooltipText: qsTr("Capture a desktop window into this scratchpad")
+      height: Style.space(28)
+      fontSize: Style.font.bodySmall
+      iconText: "󰆼"
+      onClicked: root.captureRequested()
     }
     Button {
       id: deleteBtn
