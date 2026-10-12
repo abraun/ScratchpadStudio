@@ -28,7 +28,8 @@ Item {
     var out = []
     for (var i = 0; i < windows.length; i++) {
       var win = windows[i]
-      if (q !== "" && win.cls.toLowerCase().indexOf(q) < 0
+      var cls = String(win.class || "")
+      if (q !== "" && cls.toLowerCase().indexOf(q) < 0
           && win.title.toLowerCase().indexOf(q) < 0
           && String(win.workspace).indexOf(q) < 0) continue
       out.push(win)
@@ -156,6 +157,58 @@ Item {
                 anchors.rightMargin: Style.space(8)
                 spacing: Style.space(8)
 
+                // app identity: themed icon from the class's desktop entry,
+                // letter fallback - a row never renders without an identity
+                Item {
+                  Layout.preferredWidth: Style.space(24)
+                  Layout.preferredHeight: Style.space(24)
+                  Image {
+                    id: appIcon
+                    anchors.fill: parent
+                    source: WindowIdentity.iconUrl(Quickshell, DesktopEntries, row.win.class)
+                    fillMode: Image.PreserveAspectFit
+                    smooth: true
+                    visible: status === Image.Ready
+                  }
+                  Text {
+                    anchors.centerIn: parent
+                    visible: appIcon.status !== Image.Ready
+                    text: WindowIdentity.initial(row.win.class, row.win.title)
+                    color: Color.muted
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.body
+                    font.bold: true
+                    renderType: Text.NativeRendering
+                  }
+                }
+
+                ColumnLayout {
+                  Layout.fillWidth: true
+                  spacing: 0
+                  Text {
+                    Layout.fillWidth: true
+                    text: WindowIdentity.appName(DesktopEntries, row.win.class, row.win.title)
+                    textFormat: Text.PlainText
+                    elide: Text.ElideRight
+                    color: Color.foreground
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.bodySmall
+                    font.bold: true
+                    renderType: Text.NativeRendering
+                  }
+                  Text {
+                    Layout.fillWidth: true
+                    text: row.win.title !== "" ? row.win.title : row.win.class
+                    textFormat: Text.PlainText
+                    elide: Text.ElideRight
+                    color: Color.muted
+                    font.family: Style.font.family
+                    font.pixelSize: root.compact
+                      ? Math.max(8, Style.font.caption * 0.85) : Style.font.caption
+                    renderType: Text.NativeRendering
+                  }
+                }
+
                 Rectangle {
                   Layout.preferredWidth: Style.space(34)
                   Layout.preferredHeight: Style.space(22)
@@ -168,32 +221,6 @@ Item {
                     font.family: Style.font.family
                     font.pixelSize: Style.font.caption
                     font.bold: true
-                    renderType: Text.NativeRendering
-                  }
-                }
-
-                ColumnLayout {
-                  Layout.fillWidth: true
-                  spacing: 0
-                  Text {
-                    Layout.fillWidth: true
-                    text: row.win.title !== "" ? row.win.title : row.win.cls
-                    textFormat: Text.PlainText
-                    elide: Text.ElideRight
-                    color: Color.foreground
-                    font.family: Style.font.family
-                    font.pixelSize: Style.font.bodySmall
-                    renderType: Text.NativeRendering
-                  }
-                  Text {
-                    Layout.fillWidth: true
-                    text: row.win.cls + (row.win.floating ? qsTr("  ·  floating") : "")
-                    textFormat: Text.PlainText
-                    elide: Text.ElideRight
-                    color: Color.muted
-                    font.family: Style.font.family
-                    font.pixelSize: root.compact
-                      ? Math.max(8, Style.font.caption * 0.85) : Style.font.caption
                     renderType: Text.NativeRendering
                   }
                 }

@@ -6,6 +6,7 @@ import Quickshell.Hyprland
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
+import "../lib/WindowIdentity.js" as WindowIdentity
 
 // AppPickerList — the shared app picker: installed apps, running windows,
 // or a custom command/URL, one search box for all three. Used by the
@@ -20,6 +21,7 @@ Item {
   id: root
 
   property bool demo: false
+  property bool compact: false
   property var pickedClasses: []          // ["atlas", ...] — shows the ✓ state
   signal picked(var app)
   signal escapeRequested()
@@ -107,7 +109,7 @@ Item {
   }
 
   function pickRunning(cls, title) {
-    var name = title.split(" ")[0].slice(0, 24) || cls
+    var name = WindowIdentity.appName(DesktopEntries, cls, title)
     picked({
       name: name,
       command: cls,
@@ -442,20 +444,27 @@ Item {
 
                 Text {
                   Layout.fillWidth: true
-                  text: win.cls
+                  // app name from the desktop entry (class fallback) —
+                  // the class string alone reads like developer jargon
+                  text: WindowIdentity.appName(DesktopEntries, win.cls, win.title)
                   textFormat: Text.PlainText
                   elide: Text.ElideRight
                   color: runningRow.pickedAlready ? Color.accent : Color.foreground
                   font.family: Style.font.family
                   font.pixelSize: Style.font.bodySmall
+                  font.bold: true
                   renderType: Text.NativeRendering
                 }
 
                 Text {
-                  text: qsTr("window class")
+                  Layout.fillWidth: true
+                  text: win.title !== "" ? win.title : win.cls
+                  textFormat: Text.PlainText
+                  elide: Text.ElideRight
                   color: Color.muted
                   font.family: Style.font.family
-                  font.pixelSize: Style.font.caption
+                  font.pixelSize: root.compact
+                    ? Math.max(8, Style.font.caption * 0.85) : Style.font.caption
                   renderType: Text.NativeRendering
                 }
               }
