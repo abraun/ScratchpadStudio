@@ -20,6 +20,8 @@ Usage: scratchpad-studio <command> [args]
   capture <id>            move the focused window (or --class C /
                           --address A) into the scratchpad and add its
                           class - bindable as 'send window to <id>'
+  eject                   move the focused scratchpad window to the
+                          current workspace and stop re-summoning it
   install / uninstall     wire in / cleanly remove the managed config
   state-path              print the state file path
   version                 print the plugin version
