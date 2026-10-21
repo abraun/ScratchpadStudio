@@ -43,12 +43,15 @@ changes and regenerates automatically. Documented in the README.
 - **State** (source of truth, plugin-owned):
   `~/.config/scratchpad-studio/scratchpads.json`.
 - **Generated config** (plugin-owned file, fully rewritten on each apply):
-  `~/.config/hypr/scratchpad-studio.lua` — emits, for every scratchpad:
-  - one `o.bind(chord, "Scratchpad Studio: <name>",
-    "<plugin>/bin/scratchpad-studio toggle <id>")` line,
-  - per app: `o.window({ class = "^<class>$", workspace = "special:<id> silent" },
-    { float = true, size = "<w> <h>", move = "<x> <y>", animation = "slide" })`
-    with pixel geometry computed from the layout, anchor, size and margin.
+  `~/.config/hypr/scratchpad-studio.lua` — **keybinds only**: one toggle
+  `o.bind` per scratchpad, an auto-generated eject `o.bind` (toggle chord
+  + ALT, Omarchy's SUPER+S → SUPER+ALT+S pattern; skipped for chords that
+  already carry ALT or that would collide with a bind the studio doesn't
+  own), and the studio's own window rule. **No per-app window rules**: a
+  class-global workspace/placement rule would capture every window of
+  that class — fresh launches outside the scratchpad included — which
+  trapped the captain's browser. Scratchpad windows are claimed per
+  launch instead (see toggle flow).
 - **Managed include block** in `~/.config/hypr/bindings.lua`:
   `-- >>> scratchpad-studio >>>` … `require("hypr.scratchpad-studio")` …
   `-- <<< scratchpad-studio <<<`. Idempotent; backed up before every write;
@@ -80,27 +83,34 @@ changes and regenerates automatically. Documented in the README.
   **hard block**: the Save/Test buttons disable and the helper's upsert
   refuses the write (`--allow-conflicts` for scripted migrations).
 - **Toggle flow** (`bin/scratchpad-studio toggle <id>`):
-  if the special workspace is currently visible → hide it; else launch any
-  configured apps whose window class is absent from `hyprctl -j clients`
-  (rules route them into the hidden special workspace), then reveal, then
-  reflow (slots placement only). The reflow-on-reveal is what makes an
-  anchored scratchpad land in its saved arrangement every time: window
-  rules only fire at map time, so windows that drifted (dragged, or tiled
-  by a map that predated our rules) would otherwise reveal scattered.
-  No PID tracking at all — presence is class-based, which is exactly the
-  fix for single-instance apps (Cider) and web apps
-  (`chrome-<host>__-Default` classes from `--app=URL`).
+  if the special workspace is currently visible → hide it; else launch
+  every non-detached app whose class is missing from the special, spawn a
+  background claim-wait (up to 15s) that moves each new window onto the
+  special and reflows it into its slot, reveal, and reflow the existing
+  windows. **Per-launch claiming replaces class rules**: a normal launch
+  from the dock or a launcher is a normal window on a normal workspace —
+  never captured, never hidden. Ejected apps are skipped by toggle until
+  captured again. No PID tracking — presence is class-based for launches
+  and address-based for claiming; single-instance apps (Cider) and web
+  apps (`chrome-<host>__-Default` classes from `--app=URL`) work as
+  before.
 - **Window capture** (`bin/scratchpad-studio capture <id>`):
   move an existing desktop window into a scratchpad — the focused window
   by default, or `--class` / `--address` to pick one. The window moves
   onto the special workspace (silent, follow=false), its class joins the
   app list if new (name/launch command/single-instance from the app
-  catalogue), config regenerates so future windows of the class route
-  here, and the window reflows into its slot. Guards: windows already on
-  a special workspace are refused, the studio's own window is refused,
-  a class managed by another scratchpad is refused (one class, one
-  scratchpad - same rule as ids), and the GUI's picker lists live
-  windows per workspace. Bindable: `capture <id>` is the whole command.
+  catalogue; a captured app is un-detached), config regenerates so the
+  bind set stays canonical, and the window reflows into its slot.
+  Guards: windows already on a special workspace are refused, the
+  studio's own window is refused, a class managed by another scratchpad
+  is refused (one class, one scratchpad - same rule as ids), and the
+  GUI's picker lists live windows per workspace.
+- **Window eject** (`bin/scratchpad-studio eject`): the inverse - the
+  focused scratchpad window moves to the current workspace and its app
+  entry is marked detached, so toggle stops re-summoning it. The window
+  stays open and fully usable as a normal desktop window. Auto-generated
+  eject keybinds follow Omarchy's SUPER+S → SUPER+ALT+S pattern per
+  scratchpad.
 - **Never kills windows**: delete removes rules + state; windows that were
   living on the special workspace are moved to the current workspace
   first (unless empty).

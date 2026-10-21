@@ -22,15 +22,15 @@ class TestGenerateLua(FixtureCase):
         self.assertEqual(lua.count("o.window"), 1)
         self.assertNotIn("o.bind", lua)
 
-    def test_window_rule_shape(self):
+    def test_no_class_global_window_rules(self):
+        # class-global o.window rules captured EVERY window of a managed
+        # class - fresh launches outside the scratchpad included. The
+        # generated config must never contain them: only the studio's own
+        # window rule, binds, and comments.
         lua = self.sst.generate_lua(state(sp()), HELPER, MONITOR)
-        self.assertIn(
-            'o.window({ class = "Cider" }, '
-            '{ workspace = "special:music silent", float = true, '
-            'size = "1080 562", move = "360 12", '
-            'monitor = "eDP-1", animation = "slide" })',
-            lua,
-        )
+        self.assertNotIn("special:music silent", lua)
+        self.assertEqual(lua.count("o.window"), 1)  # the studio rule only
+        self.assertNotIn("Cider", lua)
 
     def test_bind_shape_uses_absolute_helper(self):
         lua = self.sst.generate_lua(state(sp()), HELPER, MONITOR)
@@ -65,9 +65,9 @@ class TestGenerateLua(FixtureCase):
         app = {"name": "Evil", "command": "x", "class": evil_class,
                "webapp": False, "singleInstance": False}
         lua = self.sst.generate_lua(state(sp(apps=[app])), HELPER, MONITOR)
-        # The quote inside the class is escaped, so no rule is syntactically
-        # broken open (the class simply will not match a real window).
-        self.assertIn('class = "a\\"), os.exit()--"', lua)
+        # No rule interpolates the class anymore, so nothing can be broken
+        # open; the generated config stays syntactically inert.
+        self.assertNotIn('os.exit()', lua)
 
     def test_multi_app_layout_positions(self):
         apps = [
@@ -76,11 +76,11 @@ class TestGenerateLua(FixtureCase):
             {"name": "B", "command": "b", "class": "B", "webapp": False,
              "singleInstance": False},
         ]
-        lua = self.sst.generate_lua(state(sp(layout="pair", apps=apps)), HELPER, MONITOR)
-        self.assertIn('class = "A"', lua)
-        self.assertIn('class = "B"', lua)
+        pad = sp(layout="pair", apps=apps)
+        rects = self.sst.layout_rects(pad, (1800, 1125))
         # both windows sized to half minus the gap
-        self.assertIn('size = "537 562"', lua)
+        self.assertEqual(rects[0][2], 537)
+        self.assertEqual(rects[1][2], 537)
 
 
 class TestManagedBlock(FixtureCase):

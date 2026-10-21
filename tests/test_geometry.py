@@ -181,15 +181,6 @@ class TestPopinTransition(FixtureCase):
         out = self.sst.normalize_sp({"id": "x", "transition": "zoom"})
         self.assertEqual(out["transition"], "down")
 
-    def test_popin_rule_uses_popin_animation(self):
-        pad = sp(transition="popin")
-        rules = self.sst.runtime_rules(pad, MONITOR)
-        self.assertIn('animation = "popin"', rules[0])
-        self.assertNotIn('animation = "slide"', rules[0])
-        lua = self.sst.generate_lua(state(pad), HELPER, MONITOR)
-        self.assertIn('animation = "popin"', lua)
-
-
 class TestWideLayouts(FixtureCase):
     """One window spans its half, the rest stack in the other — the
     L-shape the captain asked for (chromium full-height left, two stacked

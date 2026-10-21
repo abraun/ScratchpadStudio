@@ -30,9 +30,11 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 HOME = Path(os.environ.get("HOME", str(Path.home())))
@@ -66,13 +68,6 @@ TRANSITIONS = ("down", "up", "right", "left", "popin")
 # float + baked pixel rules — the default since v0.1) or free-floating
 # ("floating": float, no size/move rules, the window keeps its own size).
 PLACEMENTS = ("slots", "floating")
-
-# Per-window animation style for the reveal. Edge anchors slide from their
-# edge; the center anchor pops in (scale), which reads as "appear in place".
-ANIMATION_STYLES = {
-    "down": "slide", "up": "slide", "right": "slide", "left": "slide",
-    "popin": "popin",
-}
 
 # Apps known to be single-instance: the launcher process exits immediately
 # and the real window maps later, so PID/process tracking always lies. For
@@ -344,6 +339,9 @@ def normalize_app(app: dict) -> dict:
         "class": str(app.get("class") or ""),
         "webapp": bool(app.get("webapp")),
         "singleInstance": bool(app.get("singleInstance")),
+        # Ejected apps keep their entry but toggle stops re-summoning them
+        # until they are captured (or re-enabled) again.
+        "detached": bool(app.get("detached")),
     }
 
 
@@ -589,65 +587,112 @@ def layout_rects(sp: dict, usable: tuple[int, int]) -> list[tuple[int, int, int,
 
 # ---------------------------------------------------------------- engine
 
-def window_rule_body(sp: dict, app: dict, rect: tuple[int, int, int, int] | None,
-                      monitor_name: str) -> str:
-    """Rule body shared by runtime rules and generated config. `rect` is
-    the app's slot geometry; None (floating placement) omits size/move so
-    the window floats at its own size instead of a baked slot."""
-    body = f'workspace = "special:{sp["id"]} silent", float = true'
-    if rect is not None:
-        body += f', size = "{rect[2]} {rect[3]}", move = "{rect[0]} {rect[1]}"'
-        if monitor_name:
-            body += f', monitor = "{monitor_name}"'
-    style = ANIMATION_STYLES.get(sp["transition"])
-    if style:
-        body += f", animation = {lua_quote(style)}"
-    return body
+def expected_classes(sp: dict) -> set[str]:
+    """Classes this scratchpad may claim at launch: every non-detached app
+    with a class. Detached apps were explicitly ejected - toggle must not
+    re-summon them until they are captured (or re-enabled) again."""
+    return {app["class"] for app in sp["apps"]
+            if app["class"] and not app.get("detached")}
 
 
-def runtime_rules(sp: dict, monitor: dict) -> list[str]:
-    """Lua hl.window_rule() snippets routing each app class into the hidden
-    special workspace. Slots placement pins pixel geometry (baked from the
-    monitor — rules ignore percentages); floating lets the window size
-    itself. Runtime rules vanish on reload; `apply` persists the same rules
-    via generated config."""
-    monitor_name = monitor.get("name", "")
-    snippets = []
-    rects = layout_rects(sp, usable_area(monitor)) if sp["placement"] == "slots" else None
-    for app, rect in zip(sp["apps"], rects or [None] * len(sp["apps"])):
-        if not app["class"]:
+def on_special_addresses(sp_id: str) -> set[str]:
+    return {str(c.get("address") or "") for c in clients()
+            if c.get("mapped", True)
+            and str((c.get("workspace") or {}).get("name") or "") == f"special:{sp_id}"}
+
+
+def plan_claim(sp: dict, clients_list: list[dict], known: set[str]) -> list[dict]:
+    """Which live windows belong to this scratchpad's launch and still need
+    claiming: class matches an expected app, the address was unknown before
+    our launch (so pre-existing desktop windows are never touched), and the
+    window is not on a special workspace already. Pure; tests pin it."""
+    expected = expected_classes(sp)
+    special_prefix = "special:"
+    out = []
+    for client in clients_list:
+        if not client.get("mapped", True):
             continue
-        match = f'class = "{app["class"]}"'
-        snippets.append(
-            f"hl.window_rule({{ match = {{ {match} }}, {window_rule_body(sp, app, rect, monitor_name)} }})"
-        )
-    return snippets
+        address = str(client.get("address") or "")
+        cls = str(client.get("class") or "")
+        if address in known or cls not in expected:
+            continue
+        if str((client.get("workspace") or {}).get("name") or "").startswith(special_prefix):
+            continue
+        out.append(client)
+    return out
 
 
-def transition_rule(sp: dict) -> str | None:
-    """Per-window animation style so the reveal matches the chosen direction.
-    The specialWorkspace slide itself is global (Omarchy sets slidevert);
-    the window animation is what we can steer per scratchpad."""
-    style = ANIMATION_STYLES.get(sp["transition"])
-    if not style:
-        return None
-    classes = [a["class"] for a in sp["apps"] if a["class"]]
-    if not classes:
-        return None
-    match = "class = " + " or ".join(lua_quote(c) for c in classes)
-    return f"hl.window_rule({{ match = {{ {match} }}, animation = {lua_quote(style)} }})"
+def reveal(sp: dict) -> None:
+    """The show path without class-global rules.
+
+    Old design (removed): generated o.window rules routed EVERY window of
+    a managed class into the special workspace - once an app was in a
+    scratchpad, fresh launches after the user killed it were captured
+    forever and the app could not be used normally outside.
+
+    New design: a normal launch is a normal window. The toggle claims its
+    own windows per launch: launch_missing spawns the app, a background
+    claim-wait polls for the new windows and moves each one onto the
+    special (silent), then reflow lays them into their slots. The reveal
+    happens immediately so the chord feels instant; slow starters are
+    claimed as they map, within the claim deadline. Anything that maps
+    after the deadline stays a normal window - never trapped."""
+    known = {str(c.get("address") or "") for c in clients()}
+    launch_missing(sp)
+    spawn_claim_wait(sp["id"], known)
+    dispatch_lua(f'hl.dsp.workspace.toggle_special({lua_quote(sp["id"])})')
+    if sp["placement"] == "slots":
+        reflow(sp["id"], quiet=True)
+
+
+def spawn_claim_wait(sp_id: str, known: set[str], timeout: int = 15) -> None:
+    payload = json.dumps({"id": sp_id, "known": sorted(known), "timeout": timeout})
+    helper = helper_abs_path()
+    subprocess.Popen(
+        ["bash", "-c", shlex.quote(helper) + " claim-wait " + shlex.quote(payload)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def cmd_claim_wait(argv: list[str]) -> None:
+    payload = json.loads(argv[2])
+    sp_id = payload["id"]
+    known = set(payload.get("known") or [])
+    deadline = time.monotonic() + float(payload.get("timeout") or 15)
+    state = load_state()
+    sp = find_sp(state, sp_id)
+    if sp is None:
+        return
+    expected = expected_classes(sp)
+    while time.monotonic() < deadline:
+        state = load_state()
+        sp = find_sp(state, sp_id)
+        if sp is None:
+            return
+        expected = expected_classes(sp)
+        for client in plan_claim(sp, clients(), known):
+            dispatch_lua(
+                f'hl.dsp.window.move({{ window = {lua_quote("address:" + str(client.get("address")))}, '
+                f'workspace = {lua_quote("special:" + sp_id)} , follow = false }})'
+            )
+        on_special = classes_on_special(sp_id)
+        if expected and expected.issubset(on_special):
+            break
+        time.sleep(0.3)
+    reflow(sp_id, quiet=True)
 
 
 def launch_missing(sp: dict) -> None:
-    # "Running" means the scratchpad already owns a window of this class on
-    # its special workspace — a window of the same class living in the user's
-    # regular workspaces is NOT this scratchpad's copy, so we launch our own
-    # (the window rules route it into the hidden special). Exception:
-    # single-instance apps can't open a second copy, so any instance counts.
+    # Launch every non-detached app whose class is not already represented
+    # on this scratchpad's special workspace. A window of the same class
+    # living in the user's regular workspaces is NOT this scratchpad's
+    # copy and is never touched (single-instance apps are the exception:
+    # any instance counts, so launchers that exit immediately still work).
     on_special = classes_on_special(sp["id"])
     have_anywhere = window_classes()
     for app in sp["apps"]:
-        if not app["command"]:
+        if not app["command"] or app.get("detached"):
             continue
         if app["class"] and app["class"] in on_special:
             continue
@@ -664,29 +709,6 @@ def launch_missing(sp: dict) -> None:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-
-
-def reveal(sp: dict) -> None:
-    """Shared show path: re-arm runtime rules, launch missing apps, reveal
-    the special workspace, then reflow slots-placement windows onto their
-    configured rects.
-
-    The reflow-on-reveal matters: window rules only fire at map time, so
-    windows that drifted (dragged while floating, tiled by an earlier map
-    before our rules loaded) would otherwise reveal scattered even though
-    the saved layout is intact. Reflow is idempotent, cheap, touches only
-    this scratchpad's windows, and floating placement skips it entirely
-    (there the positions are the user's to keep)."""
-    monitor = focused_monitor()
-    for snippet in runtime_rules(sp, monitor):
-        eval_lua(snippet)
-    rule = transition_rule(sp)
-    if rule:
-        eval_lua(rule)
-    launch_missing(sp)
-    dispatch_lua(f'hl.dsp.workspace.toggle_special({lua_quote(sp["id"])})')
-    if sp["placement"] == "slots":
-        reflow(sp["id"], quiet=True)
 
 
 def toggle(sp_id: str) -> None:
@@ -721,13 +743,41 @@ def hide(sp_id: str) -> None:
 
 # ------------------------------------------------------- config generation
 
-def generate_lua(state: dict, helper_path: str, monitor: dict) -> str:
+def bind_signature(chord: str) -> tuple[int, str] | None:
+    """Order-independent identity of a chord: (modmask, KEY). 'ALT + SUPER
+    + B' and 'SUPER + ALT + B' are the same bind to Hyprland."""
+    mask = chord_modmask(chord)
+    key = chord_key(chord)
+    if mask is None or not key:
+        return None
+    return (mask, key.upper())
+
+
+def eject_chord(keybind: str) -> str | None:
+    """The eject chord for a scratchpad, following Omarchy's built-in
+    SUPER+S -> SUPER+ALT+S pattern: the toggle chord with ALT added.
+    Chords that already contain ALT are skipped - there is no clean way
+    to add ALT twice, and the CLI command still exists for those."""
+    parts = [p.strip().upper() for p in str(keybind or "").split("+")]
+    if len(parts) < 2 or "ALT" in parts[:-1]:
+        return None
+    return "ALT + " + str(keybind).strip()
+
+
+def generate_lua(state: dict, helper_path: str, monitor: dict,
+                 taken: set | None = None) -> str:
     """The plugin-owned ~/.config/hypr/scratchpad-studio.lua. Fully rewritten
-    on every apply; contains only o.bind/o.window calls derived from state.
-    Geometry is baked in pixels (window rules ignore percentages) from the
-    given monitor; `apply` regenerates whenever monitors change."""
-    usable = usable_area(monitor)
-    monitor_name = monitor.get("name", "")
+    on every apply; contains only keybinds (plus the studio's own window
+    rule) derived from state.
+
+    Deliberately NO per-app o.window rules: a class-global workspace or
+    placement rule would capture every window of that class - fresh
+    launches outside the scratchpad included - and hijack their geometry.
+    Scratchpad windows are claimed per launch by the helper (claim-wait)
+    and placed with dispatchers instead. `taken` carries (modmask, KEY)
+    signatures of existing binds: an eject bind that would collide with a
+    bind we do not own (an Omarchy default, for instance) is skipped."""
+    taken = set(taken or set())
     lines = [
         "-- scratchpad-studio: managed by the Scratchpad Studio plugin.",
         "-- Regenerated from ~/.config/scratchpad-studio/scratchpads.json —",
@@ -746,20 +796,26 @@ def generate_lua(state: dict, helper_path: str, monitor: dict) -> str:
         lines.append("")
     for sp in state["scratchpads"]:
         lines.append(f"-- {sp['name']} ({sp['id']})")
-        rects = layout_rects(sp, usable) if sp["placement"] == "slots" else None
-        for app, rect in zip(sp["apps"], rects or [None] * len(sp["apps"])):
-            if not app["class"]:
-                continue
-            lines.append(
-                f"o.window({{ class = {lua_quote(app['class'])} }}, "
-                f"{{ {window_rule_body(sp, app, rect, monitor_name)} }})"
-            )
         if sp["keybind"]:
             command = f"{helper_path} toggle {sp['id']}"
-            lines.append(
-                f"o.bind({lua_quote(sp['keybind'])}, {lua_quote('Scratchpad: ' + sp['name'])}, "
-                f"{lua_quote(command)})"
-            )
+            sig = bind_signature(sp["keybind"])
+            if sig is not None and sig in taken:
+                lines.append(f"-- toggle chord {sp['keybind']} skipped: already bound")
+            else:
+                lines.append(
+                    f"o.bind({lua_quote(sp['keybind'])}, {lua_quote('Scratchpad: ' + sp['name'])}, "
+                    f"{lua_quote(command)})"
+                )
+                if sig is not None:
+                    taken.add(sig)
+            eject = eject_chord(sp["keybind"])
+            eject_sig = bind_signature(eject) if eject else None
+            if eject and eject_sig is not None and eject_sig not in taken:
+                lines.append(
+                    f"o.bind({lua_quote(eject)}, {lua_quote('Scratchpad eject: ' + sp['name'])}, "
+                    f"{lua_quote(helper_path + ' eject --from ' + sp['id'])})"
+                )
+                taken.add(eject_sig)
         lines.append("")
     return "\n".join(lines)
 
@@ -829,10 +885,34 @@ def config_errors() -> str:
     return (result.stdout + result.stderr).strip()
 
 
+def live_bind_signatures() -> set:
+    """(modmask, KEY) signatures of live binds this plugin does not generate
+    - the reservation set for auto-generated eject binds."""
+    try:
+        binds = filter_managed_binds(hyprctl_json(["-j", "binds"]))
+    except (SystemExit, json.JSONDecodeError, ValueError):
+        return set()
+    sigs = set()
+    for b in binds:
+        mask = b.get("modmask")
+        key = str(b.get("key") or "").upper()
+        if mask is None or not key:
+            continue
+        try:
+            sigs.add((int(mask), key))
+        except (TypeError, ValueError):
+            continue
+    return sigs
+
+
 def apply(quiet: bool = False) -> None:
     state = load_state()
     monitor = focused_monitor()
-    lua = generate_lua(state, helper_abs_path(), monitor)
+    # Existing binds we do not own (Omarchy defaults, other tools) are
+    # reserved: auto-generated eject binds skip chords that would collide
+    # with them. Our own binds are regenerated, so they stay available.
+    taken = live_bind_signatures()
+    lua = generate_lua(state, helper_abs_path(), monitor, taken)
 
     # Back up before every write; restore both if the reload rejects them.
     backup_file(GENERATED_LUA, "apply")
@@ -848,7 +928,6 @@ def apply(quiet: bool = False) -> None:
         old_bindings = None
 
     subprocess.run(["hyprctl", "reload"], capture_output=True, text=True, timeout=10)
-    import time
     time.sleep(0.3)
     errors = config_errors()
     if "scratchpad-studio" in errors:
@@ -1289,6 +1368,61 @@ def live_windows() -> list[dict]:
     return out
 
 
+def cmd_eject() -> None:
+    """Inverse of capture: move the focused window off its scratchpad
+    special workspace to the current workspace and mark its app entry
+    detached, so toggle stops re-summoning it. The window stays open and
+    fully usable as a normal desktop window. Never closes or kills."""
+    focused = None
+    try:
+        focused = hyprctl_json(["-j", "activewindow"])
+    except (json.JSONDecodeError, ValueError):
+        focused = None
+    focused = None
+    try:
+        focused = hyprctl_json(["-j", "activewindow"])
+    except (json.JSONDecodeError, ValueError):
+        focused = None
+    # eject targets the opposite of capture: a window ON a special
+    # workspace, so the special-resident refusal does not apply here.
+    if focused is None or not focused.get("address"):
+        die("no focused window")
+    target = focused
+    address = str(target.get("address") or "")
+    ws_name = str((target.get("workspace") or {}).get("name") or "")
+    if not ws_name.startswith("special:"):
+        die(f"the focused window is not on a scratchpad ({ws_name or 'unknown workspace'})")
+    sp_id = ws_name[len("special:"):]
+    state = load_state()
+    sp = find_sp(state, sp_id)
+    if sp is None:
+        die(f"{ws_name} is not a managed scratchpad")
+    active_ws = hyprctl_json(["activeworkspace"])
+    target_ws = str(active_ws.get("name") or "")
+    if target_ws == "" or target_ws.startswith("special:"):
+        target_ws = str(active_ws.get("id") or "1")
+    dispatch_lua(
+        f'hl.dsp.window.move({{ window = {lua_quote("address:" + address)}, '
+        f'workspace = {lua_quote(target_ws)} , follow = false }})'
+    )
+    cls = str(target.get("class") or "")
+    detached = False
+    for app in sp["apps"]:
+        if app["class"] == cls and not app.get("detached"):
+            app["detached"] = True
+            detached = True
+            save_state(state)
+            apply(quiet=True)
+            break
+    print(json.dumps({
+        "ejected": address,
+        "class": cls,
+        "from": ws_name,
+        "to": target_ws,
+        "detached": detached,
+    }))
+
+
 def cmd_windows_json() -> None:
     print(json.dumps(live_windows()))
 
@@ -1452,6 +1586,10 @@ def main(argv: list[str]) -> None:
         cmd_binds_json()
     elif command == "capture" and len(argv) >= 3:
         cmd_capture(argv)
+    elif command == "eject":
+        cmd_eject()
+    elif command == "claim-wait" and len(argv) >= 3:
+        cmd_claim_wait(argv)
     elif command == "windows-json":
         cmd_windows_json()
     elif command == "apps":

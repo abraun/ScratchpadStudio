@@ -1021,8 +1021,10 @@ Item {
                         }
                         Text {
                           Layout.fillWidth: true
-                          visible: app && app.webapp
-                          text: qsTr("web app")
+                          visible: app && (app.webapp || app.detached)
+                          text: (app && app.webapp ? qsTr("web app") : "")
+                            + (app && app.webapp && app.detached ? " · " : "")
+                            + (app && app.detached ? qsTr("ejected") : "")
                           color: Color.muted
                           font.family: Style.font.family
                           font.pixelSize: Math.max(8, Style.font.caption * 0.85)

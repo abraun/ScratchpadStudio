@@ -33,30 +33,14 @@ class TestPlacement(FixtureCase):
         self.assertEqual(self.sst.normalize_sp(
             {"id": "x", "placement": "tiled?!"})["placement"], "slots")
 
-    def test_floating_rule_omits_geometry(self):
-        lua = self.sst.generate_lua(
-            state(sp(placement="floating")), HELPER, MONITOR)
-        self.assertIn(
-            'o.window({ class = "Cider" }, '
-            '{ workspace = "special:music silent", float = true, '
-            'animation = "slide" })',
-            lua,
-        )
-        self.assertNotIn("size =", lua.replace('size = "1040 700"', ""))
-        self.assertNotIn("move =", lua)
-        self.assertNotIn('monitor = "eDP-1"', lua)
-
-    def test_slots_rule_unchanged_shape(self):
-        lua = self.sst.generate_lua(state(sp()), HELPER, MONITOR)
-        self.assertIn('size = "1080 562", move = "360 12"', lua)
-        self.assertIn('monitor = "eDP-1"', lua)
-
-    def test_runtime_rules_match_placement(self):
-        rules = self.sst.runtime_rules(sp(placement="floating"), MONITOR)
-        self.assertEqual(len(rules), 1)
-        self.assertNotIn("size", rules[0])
-        rules = self.sst.runtime_rules(sp(), MONITOR)
-        self.assertIn('size = "1080 562"', rules[0])
+    def test_floating_and_slots_emit_no_window_rules(self):
+        # placement is applied per launch with dispatchers now - neither
+        # placement mode may emit class-global window rules
+        for placement in ("slots", "floating"):
+            lua = self.sst.generate_lua(state(sp(placement=placement)),
+                                        HELPER, MONITOR)
+            self.assertNotIn("special:music silent", lua)
+            self.assertNotIn("Cider", lua)
 
 
 class TestRemovedClasses(FixtureCase):
@@ -339,3 +323,88 @@ class TestWindowCapture(FixtureCase):
             self.client("0xA", "Cider", title="Cider - music player"), [])
         self.assertEqual(app["name"], "Cider")
         self.assertTrue(app["singleInstance"])
+
+
+class TestUntrap(FixtureCase):
+    """The engine must never emit class-global workspace-capture rules, and
+    the launch path claims its own windows per launch instead (a class rule
+    once captured every window of a managed class - the captain could not
+    open a browser outside the scratchpad)."""
+
+    def test_generated_config_has_no_workspace_capture_rules(self):
+        lua = self.sst.generate_lua(state(sp(layout="pair")), HELPER, MONITOR)
+        self.assertNotIn("workspace = ", lua)
+        self.assertNotIn("special:music silent", lua)
+        self.assertEqual(lua.count("o.window"), 1)  # the studio rule only
+
+    def test_expected_classes_exclude_detached(self):
+        pad = sp(apps=[
+            {"name": "A", "command": "a", "class": "A", "webapp": False,
+             "singleInstance": False},
+            {"name": "B", "command": "b", "class": "B", "webapp": False,
+             "singleInstance": False, "detached": True},
+        ])
+        self.assertEqual(self.sst.expected_classes(pad), {"A"})
+
+    def test_plan_claim_skips_known_and_special_residents(self):
+        pad = sp(apps=[
+            {"name": "A", "command": "a", "class": "A", "webapp": False,
+             "singleInstance": False},
+        ])
+        clients = [
+            {"address": "0x1", "class": "A", "mapped": True,
+             "workspace": {"id": 2, "name": "2"}},          # new -> claim
+            {"address": "0x2", "class": "A", "mapped": True,
+             "workspace": {"id": 2, "name": "2"}},          # known -> skip
+            {"address": "0x3", "class": "A", "mapped": True,
+             "workspace": {"id": -99, "name": "special:music"}},  # resident
+            {"address": "0x4", "class": "B", "mapped": True,
+             "workspace": {"id": 3, "name": "3"}},          # other class
+        ]
+        claimed = self.sst.plan_claim(pad, clients, {"0x2"})
+        self.assertEqual([c["address"] for c in claimed], ["0x1"])
+
+    def test_detached_apps_are_not_launched(self):
+        # launch_missing skips detached apps: covered via expected_classes
+        # (the same set drives both) plus the normalize passthrough here.
+        app = self.sst.normalize_app({"name": "A", "command": "a",
+                                      "class": "A", "detached": True})
+        self.assertTrue(app["detached"])
+        app = self.sst.normalize_app({"name": "A", "command": "a", "class": "A"})
+        self.assertFalse(app["detached"])
+
+
+class TestEjectBinds(FixtureCase):
+    def test_eject_chord_follows_omarchy_pattern(self):
+        # Omarchy: SUPER+S toggles, SUPER+ALT+S moves to scratchpad -
+        # our eject is the toggle chord with ALT added.
+        self.assertEqual(self.sst.eject_chord("SUPER + D"), "ALT + SUPER + D")
+
+    def test_eject_chord_skips_chords_already_using_alt(self):
+        self.assertIsNone(self.sst.eject_chord("ALT + SUPER + A"))
+        self.assertIsNone(self.sst.eject_chord("SHIFT + ALT + SUPER + Z"))
+
+    def test_bind_signature_is_order_independent(self):
+        self.assertEqual(self.sst.bind_signature("ALT + SUPER + B"),
+                         self.sst.bind_signature("SUPER + ALT + B"))
+        self.assertNotEqual(self.sst.bind_signature("ALT + SUPER + B"),
+                            self.sst.bind_signature("ALT + SUPER + N"))
+
+    def test_generate_lua_emits_eject_bind(self):
+        lua = self.sst.generate_lua(state(sp(keybind="SUPER + D")),
+                                    HELPER, MONITOR, taken=set())
+        self.assertIn('o.bind("ALT + SUPER + D", "Scratchpad eject: Music"', lua)
+        self.assertIn("eject --from music", lua)
+
+    def test_eject_bind_skipped_when_chord_taken(self):
+        taken = {self.sst.bind_signature("ALT + SUPER + D")}  # e.g. Omarchy default
+        lua = self.sst.generate_lua(state(sp(keybind="SUPER + D")),
+                                    HELPER, MONITOR, taken=taken)
+        self.assertIn('o.bind("SUPER + D"', lua)      # toggle still emitted
+        self.assertNotIn("Scratchpad eject:", lua)    # eject skipped
+
+    def test_eject_bind_never_collides_with_its_own_toggle(self):
+        lua = self.sst.generate_lua(state(sp(keybind="SUPER + D")),
+                                    HELPER, MONITOR, taken=set())
+        # exactly two binds: toggle + eject (the studio rule is o.window)
+        self.assertEqual(lua.count("o.bind("), 2)

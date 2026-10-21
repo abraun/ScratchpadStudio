@@ -99,14 +99,23 @@ Scratchpad Studio manages **named special workspaces** natively:
   open onto their new slots (float → resize → move, works even while the
   scratchpad is hidden), and removing an app relocates its live windows to
   your current workspace — nothing is ever closed or killed.
-- Its chord runs `scratchpad-studio toggle <name>`: any app whose class
-  isn't already on the scratchpad's workspace is launched (rules route it
-  in), then the special workspace is revealed — and slots-placement
-  windows are reflowed onto their configured rects, so a scratchpad
-  always lands in its saved arrangement even if a window was dragged
-  away or tiled. Single-instance apps (Cider, Discord, …) match by class
-  with no process tracking, so launchers that exit immediately still
-  work; web apps match their `chrome-<host>__-Default` class.
+- Its chord runs `scratchpad-studio toggle <name>`: apps whose class is
+  not already on the scratchpad's workspace are launched, and the helper
+  claims the new windows per launch — moving each one onto the special
+  workspace and into its slot from a background claim-wait. **No
+  class-global window rules are ever generated**: an app in a scratchpad
+  stays fully usable outside it — a fresh launch from the dock or a
+  launcher opens as a normal window on a normal workspace, never
+  swallowed. Single-instance apps (Cider, Discord, …) match by class
+  with no process tracking; web apps match their
+  `chrome-<host>__-Default` class.
+- **Eject is the inverse of capture** — `scratchpad-studio eject` moves
+  the focused scratchpad window to your current workspace and detaches
+  it, so toggle stops re-summoning it (capture re-attaches). Every
+  scratchpad with a keybind gets an auto-generated eject bind following
+  Omarchy's SUPER+S → SUPER+ALT+S pattern (SUPER+D → ALT+SUPER+D;
+  chords that already contain ALT skip the auto bind), skipped when the
+  chord would collide with a bind the studio doesn't own.
 - Every scratchpad owns its own `special:<id>` workspace, and ids are
   unique — `special:scratchpad` is Omarchy's built-in (your SUPER+S
   toggles it), so the plugin never assigns that id; a scratchpad named
